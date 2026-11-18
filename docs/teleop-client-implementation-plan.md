@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |---|---|
 | 文档版本 | v1.0 |
-| 状态 | **施工中**（B0 已完成，B1 未开始；进度见第 9 节） |
+| 状态 | **施工中**（B0、B1 已完成，B2 未开始；进度见第 9 节） |
 | 日期 | 2026-11-19 |
 | 关联文档 | `teleop-client-architecture.md`（v1.5）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.2） |
 
@@ -69,12 +69,10 @@ Alliance-Terminal/
 │  ├─ ipc.proto                  Hello / HelloAck / UpData / DownData / Health
 │  └─ ui_link.proto              UiHello / UiData / UiCmd / UiHealth / ...
 ├─ libs/
-│  ├─ rm_proto/ ★                Apache-2.0：语义 ↔ 字节
-│  │  ├─ include/rm_proto/{types,topics,codec}.hpp
-│  │  └─ src/{topics,codec}.cpp
-│  └─ teleop_ipc/ ★              Apache-2.0：32 字节帧头 + SEQPACKET + 握手
-│     ├─ include/teleop_ipc/{frame,seqpacket,session}.hpp
-│     └─ src/*.cpp
+│  ├─ rm_proto/ ★                Apache-2.0：语义 ↔ 字节（header-only）
+│  │  └─ include/rm_proto/{topics,codec}.hpp
+│  └─ teleop_ipc/ ★              Apache-2.0：帧头 + SEQPACKET + 握手（header-only）
+│     └─ include/teleop_ipc/{frame,seqpacket,session}.hpp
 ├─ src/
 │  ├─ core/ ★                    时钟 / 日志 / 错误 / 配置 / LatestValueRegister / Fd RAII
 │  ├─ ipc/ ★                     连 AT-Bridge：收 CustomControl、发 CustomByteBlock
@@ -144,6 +142,7 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 6 | MQTT | `MQTTAsync` | 75 Hz 单槽需要非阻塞发布 |
 | 7 | 事件循环 | 裸 `epoll` + `eventfd` | 架构 §14.5 |
 | 8 | 日志 | spdlog（async，热路径禁日志） | 架构 §14.5 |
+| 9 | 代码组织 | **header-only**：一个组件 = 一个 `.hpp`，库做成 `INTERFACE` target；只有 `main.cpp`、测试文件、`protoc` 生成物是 `.cpp` | 便于阅读与跳转；避免声明/实现漂移 |
 
 ---
 
@@ -159,6 +158,8 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 日志 | journald（`journalctl --user -u teleop-node`） |
 | C++ 命名空间 | `teleop::core` / `teleop::ipc` / `teleop::mqtt` / `teleop::record` / `teleop::uilink`；协议代码 `rm::terminal` |
 | 提交信息 | **英文**；首行首字母大写、直接用动词说清本轮改了什么（`Add ...` / `Fix ...` / `Update ...` / `Remove ...`），≤ 72 字符；不写 `feat:`/`chore:` 之类前缀；正文用短横线列小点；模板见 `.gitmessage` |
+| 代码组织 | **header-only**：组件 = 单个 `.hpp`，不建 `.hpp`/`.cpp` 配对；库用 CMake `INTERFACE` target |
+| 提交时机 | **不自动提交**：改动留在工作区，由用户决定何时 commit / push |
 
 ---
 
@@ -257,7 +258,7 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | 批次 | 状态 | 完成日期 | 备注 |
 |---|---|---|---|
 | B0 骨架 | ✅ 完成 | 2026-11-19 | 许可证 / REUSE / CMake + 五个预设 / 格式化配置 / README / 首个提交；`cmake --preset dev`、`--preset release` 均通过 |
-| B1 协议层 | ⬜ 未开始 | — | — |
+| B1 协议层 | ✅ 完成 | 2026-11-19 | 32 条消息 + `topics.inc` + 两个内部链路 proto + `rm_proto` 编解码库（已改为 header-only）+ 23 个用例；在 Ubuntu 24.04 容器（protoc 3.21.12）里 `dev` 与 `ci`（`-Werror`）预设均全绿 |
 | B2 IPC | ⬜ 未开始 | — | — |
 | B3 模拟器 | ⬜ 未开始 | — | — |
 | B4 通信进程 | ⬜ 未开始 | — | — |

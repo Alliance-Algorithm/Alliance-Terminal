@@ -66,10 +66,22 @@ if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
 endif()
 
 # ---------------------------------------------------------------------------
+# 公共 include 根
+# 不只是给 target 用：clangd 给头文件推断编译命令时，会借用某条 TU 的命令，
+# 只有把这两个根放到全局，头文件才能在任何一条命令下都解析得到。
+# ---------------------------------------------------------------------------
+include_directories(${PROJECT_SOURCE_DIR}/proto ${PROJECT_SOURCE_DIR}/libs/rm_proto/include)
+
+# ---------------------------------------------------------------------------
 # 子目录：按批次逐行打开（见 docs/teleop-client-implementation-plan.md）
 # ---------------------------------------------------------------------------
-# B1: add_subdirectory(libs/rm_proto)
-# B1: add_subdirectory(tests)
+add_subdirectory(proto)
+add_subdirectory(libs/rm_proto)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 # B2: add_subdirectory(libs/teleop_ipc)
 # B3: add_subdirectory(tools/teleop_sim)
 # B3: add_subdirectory(tools/referee_sim)

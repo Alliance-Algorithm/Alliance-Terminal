@@ -1,0 +1,3 @@
+# clangd：使用 dev 预设的编译数据库（根目录的 compile_commands.json 是它的软链）
+CompileFlags:
+  CompilationDatabase: build/dev
