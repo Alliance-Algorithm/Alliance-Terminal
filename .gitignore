@@ -1,0 +1,22 @@
+# 构建产物
+/build/
+build-*/
+*.o
+*.a
+*.so
+*.so.*
+*.d
+compile_commands.json
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 本地配置
+*.local.toml

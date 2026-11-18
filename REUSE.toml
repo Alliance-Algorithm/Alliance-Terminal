@@ -1,0 +1,39 @@
+version = 1
+
+# 文档：CC-BY-4.0
+[[annotations]]
+path = "docs/**"
+SPDX-FileCopyrightText = "2026 Alliance"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# 根目录的构建与工具配置：Apache-2.0
+[[annotations]]
+path = [
+    "README.md",
+    "REUSE.toml",
+    ".gitmessage",
+    "CMakePresets.json",
+    ".clang-format",
+    ".clang-tidy",
+    ".editorconfig",
+    ".gitignore",
+]
+SPDX-FileCopyrightText = "2026 Alliance"
+SPDX-License-Identifier = "Apache-2.0"
+
+# 协议层与可复用库：Apache-2.0
+[[annotations]]
+path = ["proto/**", "libs/**"]
+SPDX-FileCopyrightText = "2026 Alliance"
+SPDX-License-Identifier = "Apache-2.0"
+
+# 应用与模拟器：GPL-3.0-or-later / Apache-2.0
+[[annotations]]
+path = "src/**"
+SPDX-FileCopyrightText = "2026 Alliance"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = "tools/**"
+SPDX-FileCopyrightText = "2026 Alliance"
+SPDX-License-Identifier = "Apache-2.0"

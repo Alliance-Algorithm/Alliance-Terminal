@@ -1,0 +1,20 @@
+# 提交信息格式（本仓库约定）
+#
+#   <Verb> <what changed>                 <- 英文、首字母大写、一行、<= 72 字符
+#
+#   - change 1
+#   - change 2
+#
+# 规则：
+#   - 必须英文；首字母大写；直接用动词开头（Add / Fix / Update / Remove / Refactor / Document）
+#   - 不写 feat: / fix: / chore: 之类前缀
+#   - 正文用短横线列本轮的小点，一条一行
+#   - 一个提交只做一件事；混了就拆
+#
+# 示例：
+#
+#   Add client framework
+#
+#   - Split bridge and UI into two processes
+#   - Add UDS framing layer with 32-byte header
+#   - Wire up single-slot publish path
