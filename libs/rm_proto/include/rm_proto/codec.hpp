@@ -20,22 +20,20 @@ namespace detail {
 // 吃掉 topics.inc 每行末尾的逗号，不参与任何编码
 struct Sentinel {};
 
-}  // namespace detail
+} // namespace detail
 
 // 32 条官方消息的类型安全联合体，顺序与 topics.inc 一致（下标 = topic_id - 1）
 #define X(id, name, dir, qos, src, type) type,
 using Payload = std::variant<
 #include "topics.inc"
-    detail::Sentinel
->;
+    detail::Sentinel>;
 #undef X
 
 static_assert(
-    std::variant_size_v<Payload> == kTopicCount + 1,
-    "topics.inc 的条数与 Payload 不一致");
+    std::variant_size_v<Payload> == kTopicCount + 1, "topics.inc 的条数与 Payload 不一致");
 
 struct Encoded {
-    std::uint32_t             topic_id = 0;
+    std::uint32_t topic_id = 0;
     std::vector<std::uint8_t> bytes;
 };
 
@@ -58,27 +56,25 @@ inline std::optional<Payload> decode_as(std::span<const std::uint8_t> bytes) {
 
 template <typename Msg>
 constexpr std::uint32_t topic_id_of() {
-#define X(id, name, dir, qos, src, type)                     \
-    if constexpr (std::is_same_v<Msg, type>) {               \
-        return static_cast<std::uint32_t>(id);               \
+#define X(id, name, dir, qos, src, type)       \
+    if constexpr (std::is_same_v<Msg, type>) { \
+        return static_cast<std::uint32_t>(id); \
     } else
 #include "topics.inc"
 #undef X
     { return 0U; }
 }
 
-}  // namespace detail
+} // namespace detail
 
 // 解析失败（截断、非法 wire format）返回 nullopt；未知字段按 protobuf 语义忽略
 inline std::optional<Payload> decode(std::uint32_t topic_id, std::span<const std::uint8_t> bytes) {
     switch (topic_id) {
 #define X(id, name, dir, qos, src, type) \
-    case id:                             \
-        return detail::decode_as<type>(bytes);
+    case id: return detail::decode_as<type>(bytes);
 #include "topics.inc"
 #undef X
-    default:
-        return std::nullopt;
+    default: return std::nullopt;
     }
 }
 
@@ -114,4 +110,4 @@ inline Encoded encode(const Msg& msg) {
 template <typename Msg>
 inline constexpr std::uint32_t kTopicIdOf = detail::topic_id_of<Msg>();
 
-}  // namespace rm::proto
+} // namespace rm::proto

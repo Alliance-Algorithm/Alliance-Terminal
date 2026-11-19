@@ -161,4 +161,4 @@ TEST(Codec, LookupByIdMatchesEncode) {
     EXPECT_EQ(back->command_id(), 12U);
 }
 
-}  // namespace
+} // namespace

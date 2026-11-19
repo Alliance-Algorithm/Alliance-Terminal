@@ -50,9 +50,7 @@ constexpr std::array<std::string_view, rm::proto::kTopicCount> kExpectedNames = 
     "SentryCtrlResult",
 };
 
-TEST(Topics, Has32Entries) {
-    EXPECT_EQ(topics().size(), rm::proto::kTopicCount);
-}
+TEST(Topics, Has32Entries) { EXPECT_EQ(topics().size(), rm::proto::kTopicCount); }
 
 TEST(Topics, IdsAreContiguous) {
     for (std::size_t i = 0; i < topics().size(); ++i) {
@@ -153,4 +151,4 @@ TEST(Topics, LookupByName) {
     EXPECT_EQ(rm::proto::find(std::string_view{""}), nullptr);
 }
 
-}  // namespace
+} // namespace
