@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |---|---|
 | 文档版本 | v1.0 |
-| 状态 | **施工中**（B0、B1 已完成，B2 未开始；进度见第 9 节） |
+| 状态 | **施工中**（B0、B1、B5a 已完成，B2 未开始；进度见第 9 节） |
 | 日期 | 2026-11-19 |
 | 关联文档 | `teleop-client-architecture.md`（v1.5）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.2） |
 
@@ -19,7 +19,7 @@
 |---|---|
 | 施工顺序 | **先配套，后界面**：协议层 → IPC → 模拟器 → 通信进程 → 容器；Qt 与视频放到 M0/M3 |
 | 批次 | **B0 ~ B5**，每批一个可独立验收的出口 |
-| 工期估算 | B0 0.5 天、B1 1.5 天、B2 1.5 天、B3 1 天、B4 2.5 天、B5 0.5 天（合计 4–6 个工作日） |
+| 工期估算 | B0 0.5 天、B1 1.5 天、B5a 0.5 天、B2 1.5 天、B3 1 天、B4 2.5 天、B5b 0.5 天（合计 5–6.5 个工作日） |
 | 第一批做完的标志 | 一条命令跑通"模拟器 → 通信进程 → 模拟器"，落出 `mqtt_up.pb.zst` / `mqtt_down.pb.zst` |
 | v1 明确不做 | 3D 地图、键鼠输入、多客户端、音频、云端 |
 
@@ -30,11 +30,9 @@
 ```
 B0 骨架
   └─► B1 协议层（proto + topic 表 + 编解码库）
-        ├─► B2 IPC 层（帧头 + SEQPACKET + 握手）
-        │     └─► B3 两个模拟器（teleop_sim / referee_sim）
-        │           └─► B4 通信进程（core / ipc / mqtt / record / node / uilink）
-        │                 └─► B5 开发容器
-        │                       └─► M0 视频重组器 spike ──► M3 前端
+        ├─► B5a 构建/测试容器（Dockerfile + dev-shell + CI 骨架）
+        │     └─► B2 IPC 层 ──► B3 两个模拟器 ──► B4 通信进程
+        │                                            └─► B5b GUI/GPU 容器 ──► M0 视频 spike ──► M3 前端
         └─► （B3 也可以只依赖 rm_proto，先跑 MQTT 侧）
 ```
 
@@ -183,6 +181,15 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 出口条件 | `ctest` 绿：32 条齐全、id 唯一、名字唯一、方向/QoS 正确；7 条指令编码字节正确；23 条 decode 回环 |
 | 验收 | `ctest -R 'topics|codec'` 全绿 |
 
+### B5a 构建/测试容器（0.5 天）
+
+| 项 | 内容 |
+|---|---|
+| 目标 | 所有编译与测试都在 Ubuntu 24.04 容器里跑，换台机器结果一致 |
+| 交付物 | `docker/Dockerfile`（base/dev/ci 三阶段）、`docker/build.sh`、`docker/dev-shell.sh`、`docker/mosquitto.conf`、`.devcontainer/devcontainer.json`、`.github/workflows/ci.yml` |
+| 出口条件 | `./docker/build.sh dev` 成功；容器内 `cmake --preset ci && ctest` 全绿；`build/` 属主是宿主用户 |
+| 验收 | `./docker/dev-shell.sh -- bash -lc 'cmake --preset ci && cmake --build --preset ci -j$(nproc) && ctest --preset ci'` |
+
 ### B2 IPC 层（1.5 天）
 
 | 项 | 内容 |
@@ -210,14 +217,15 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 出口条件 | `sim-demo.sh` 起 mosquitto + 两个模拟器 + `teleop-node`，产出会话目录且含 `mqtt_up.pb.zst`、`mqtt_down.pb.zst`；单槽覆盖计数正确；`systemctl stop` 优雅退出 |
 | 验收 | `ctest -R integration`；`zstd -d < mqtt_up.pb.zst | head` 能看到记录 |
 
-### B5 开发容器（0.5 天）
+### B5b GUI/GPU 容器（0.5 天，M0 之前做）
 
 | 项 | 内容 |
 |---|---|
-| 目标 | 换台机器 10 分钟能编 |
-| 交付物 | `docker/Dockerfile`（base/dev/ci 三阶段）、`docker/dev-shell.sh`、`docker/docker-compose.yml` |
-| 出口条件 | 容器内 `cmake --preset ci && ctest` 全绿；`ls -l build/` 属主是当前用户 |
-| 验收 | 按 `README` 走一遍 |
+| 目标 | 容器里能跑 Qt 界面与 VA-API 硬解，供视频开发用 |
+| 前提 | 容器与宿主**同发行版**（Mesa / libva ABI 必须匹配）；宿主 `/dev/dri` 可用 |
+| 交付物 | `docker/Dockerfile` 的 `gui` 阶段（重装 Mesa/libva、挂 `/dev/dri`、Wayland/X11 socket）、`docker/dev-shell.sh --gui`、验证清单 |
+| 出口条件 | 容器内 `vainfo` 通过、渲染器不是 llvmpipe；`gst-inspect-1.0 vah265dec` 存在 |
+| 验收 | 按《开发容器设计文档》第 8 节清单跑一遍 |
 
 ---
 
@@ -231,7 +239,7 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 4. 文档第 9 节已更新；
 5. 一个提交（或一组小提交）说明清楚做了什么。
 
-**第一批整体验收（B0–B5 做完）**
+**第一批整体验收（B0–B4 与 B5a 做完）**
 
 ```bash
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
@@ -259,10 +267,11 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 |---|---|---|---|
 | B0 骨架 | ✅ 完成 | 2026-11-19 | 许可证 / REUSE / CMake + 五个预设 / 格式化配置 / README / 首个提交；`cmake --preset dev`、`--preset release` 均通过 |
 | B1 协议层 | ✅ 完成 | 2026-11-19 | 32 条消息 + `topics.inc` + 两个内部链路 proto + `rm_proto` 编解码库（已改为 header-only）+ 23 个用例；在 Ubuntu 24.04 容器（protoc 3.21.12）里 `dev` 与 `ci`（`-Werror`）预设均全绿 |
+| B5a 构建容器 | ✅ 完成 | 2026-11-19 | `docker/Dockerfile`（base/dev/ci）+ `build.sh` + `dev-shell.sh` + CI 骨架；容器内 `ci` 预 configure/build/ctest 全绿 |
 | B2 IPC | ⬜ 未开始 | — | — |
 | B3 模拟器 | ⬜ 未开始 | — | — |
 | B4 通信进程 | ⬜ 未开始 | — | — |
-| B5 容器 | ⬜ 未开始 | — | — |
+| B5b GUI/GPU 容器 | ⬜ 未开始 | — | M0 之前做 |
 
 > 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
 

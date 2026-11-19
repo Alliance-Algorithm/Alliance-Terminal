@@ -36,28 +36,84 @@ Topic 固定 32 个（上行 1–9、下行 10–32），名字与官方协议�
 
 字段级定义见[协议整理稿](docs/custom-terminal-protocol.md)，链路细节与决策见[架构文档](docs/teleop-client-architecture.md)。
 
-## 编译
+## 开发环境
 
-Ubuntu 24.04 依赖：
+开发和测试都在 Docker 里跑。镜像固定 **Ubuntu 24.04**（GCC 13 / CMake 3.28 / protobuf 3.21），CI 用同一份 Dockerfile。
+
+### 镜像里有什么
+
+| 阶段 | 内容 | 用途 |
+|---|---|---|
+| `base` | 编译工具链、protobuf、GTest、ccache、zstd | 公共底座 |
+| `dev` | 加 gdb、clangd、clang-format、**zsh + oh-my-zsh**、mosquitto | 日常开发 |
+| `ci` | 底座 + mosquitto | CI |
+
+### 第一次：构建镜像
 
 ```bash
-sudo apt install cmake ninja-build g++ protobuf-compiler libprotobuf-dev libgtest-dev
+./docker/build.sh dev
 ```
 
+构建默认走 host 网络，这样容器里的 `git` 能用宿主上的代理（`127.0.0.1:7890` 之类）。
+oh-my-zsh 的克隆顺序是 **GitHub → gitee 镜像**；两个都不通时构建会直接失败并提示，可用
+`OMZ_REPOS="https://..." ./docker/build.sh dev` 指定别的源。
+
+### 日常：进容器
+
 ```bash
-cmake --preset dev        # Debug
+./docker/dev-shell.sh                  # 进容器，默认 zsh
+./docker/dev-shell.sh -- bash -lc '…'  # 跑一次性命令
+```
+
+VS Code：装 **Dev Containers** 扩展 → `Ctrl+Shift+P` → **Reopen in Container**。
+配置在 `.devcontainer/devcontainer.json`，自动用 `dev` 阶段、同路径挂载、装 clangd/CMake 扩展。
+
+### 在容器里编译与测试
+
+```bash
+cmake --preset dev            # Debug
 cmake --build --preset dev
 ctest --preset dev
 
-cmake --preset release    # 性能与延迟结论只认 Release
-cmake --preset ci         # Release + -Werror
+cmake --preset release        # 性能与延迟结论只认 Release
+cmake --preset ci             # Release + -Werror
 ```
 
-给编辑器（clangd / cpptools）一个编译数据库入口：
+一条命令跑完 CI 那套：
+
+```bash
+./docker/dev-shell.sh -- bash -lc 'cmake --preset ci && cmake --build --preset ci -j"$(nproc)" && ctest --preset ci'
+```
+
+### 容器约定
+
+| 约定 | 原因 |
+|---|---|
+| 源码**同路径挂载** | 容器内外是同一个绝对路径，`compile_commands.json` 和 `build/` 里的路径宿主也能用 |
+| 容器用户 uid = 宿主 uid | 构建产物不会变成 root 所有 |
+| 不设 CPU 配额 | cgroup 配额会造成几十毫秒停顿，对 60 fps 是致命的 |
+| `/ccache` 是持久卷 | 第二次编译基本全命中 |
+| 宿主与容器**别共用** `build/<preset>` | 编译器不同（GCC 15 vs 13），CMake 会拒绝复用缓存，切换时删掉重配 |
+
+### 编辑器
 
 ```bash
 ln -sfn build/dev/compile_commands.json compile_commands.json
 ```
+
+`.clangd` 里也写了兜底路径；容器里构建同样适用，因为挂载路径一致。
+
+## 本机构建（可选）
+
+不装 Docker 也能编，需要自己装依赖：
+
+```bash
+sudo apt install cmake ninja-build g++ protobuf-compiler libprotobuf-dev libgtest-dev
+
+cmake --preset dev && cmake --build --preset dev && ctest --preset dev
+```
+
+> 本机和容器编出来的产物不要放进同一个 `build/`（原因见上表）。
 
 ## 运行
 
@@ -120,6 +176,6 @@ Alliance Terminal is the operator-side client for the RoboMaster custom terminal
 
 It runs as two processes: `teleop-node` owns the only connection to RMCS (UDS) and to the referee system (MQTT 3.1.1, 32 fixed topics, raw protobuf), while `teleop-client` decodes the HEVC video feed (UDP 3334), renders telemetry, and handles recording and replay. The node is a dumb pipe: it never parses or rewrites payloads.
 
-Build with `cmake --preset dev && cmake --build --preset dev && ctest --preset dev` on Ubuntu 24.04.
+Development happens inside a Docker image pinned to Ubuntu 24.04: build it once with `./docker/build.sh dev`, then work in `./docker/dev-shell.sh` (zsh + oh-my-zsh) or use VS Code's "Reopen in Container". A native build with `cmake --preset dev` also works on Ubuntu 24.04.
 
 Licensing is split: `src/` is GPL-3.0-or-later; `proto/`, `libs/` and `tools/` are Apache-2.0; `docs/` is CC-BY-4.0.

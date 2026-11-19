@@ -151,27 +151,33 @@ Qt 相关目录（`src/ui`、`src/app`）允许使用 Qt 的异常、信号槽�
 
 ## 8. 构建与验证
 
-```bash
-cmake --preset dev
-cmake --preset release
-cmake --preset ci         # Release + -Werror
-cmake --build --preset dev
-ctest --preset dev
-```
-
-依赖（Ubuntu 24.04）：`cmake ninja-build g++ protobuf-compiler libprotobuf-dev libgtest-dev`。
-
-**宿主装了上面这些包，直接本地编；没装 protobuf 才用容器**——而且**必须同路径挂载**，否则
-`compile_commands.json` 里写的是 `/src/...`，编辑器找不到头文件：
+**首选容器**（Ubuntu 24.04，和 CI 同一个镜像；容器内是 GCC 13 / CMake 3.28 / protobuf 3.21）：
 
 ```bash
-docker run --rm --user root --network=host -v "$PWD":"$PWD" -w "$PWD" teleop-build:24.04 \
-  bash -lc 'cmake --preset dev && cmake --build --preset dev -j"$(nproc)" && ctest --preset dev'
+./docker/build.sh dev        # 构建开发镜像（一次）
+./docker/dev-shell.sh        # 进容器交互
+
+./docker/dev-shell.sh -- bash -lc 'cmake --preset ci && cmake --build --preset ci -j"$(nproc)" && ctest --preset ci'
 ```
 
-容器以 root 跑完记得 `chown -R $(id -u):$(id -g) build`。
+VS Code 用 `.devcontainer/devcontainer.json` 直接进容器（容器内用户 `ubuntu`，uid 与宿主一致）。
+容器默认 shell 是 zsh + oh-my-zsh；构建时 oh-my-zsh 官方仓库不通会自动退到 gitee 镜像，可用 `--build-arg OMZ_REPOS="url1 url2"` 覆盖。
 
-配置完之后给编辑器一个编译数据库入口：
+**不要在同一个 `build/<preset>` 里混用宿主与容器**：编译器一变，CMake 会拒绝复用缓存；删掉该目录重配即可。
+
+**宿主直编**（自己装好依赖时也行）：
+
+```bash
+sudo apt install cmake ninja-build g++ protobuf-compiler libprotobuf-dev libgtest-dev
+cmake --preset dev && cmake --build --preset dev && ctest --preset dev
+```
+
+预设：`dev`（Debug）、`release`（性能结论只认它）、`ci`（Release + `-Werror`）。
+
+**容器必须同路径挂载**（`dev-shell.sh` 已经这么做）：否则 `compile_commands.json` 里是容器路径，
+编辑器找不到头文件。容器以宿主 uid 运行，`build/` 不会变成 root 所有。
+
+编辑器入口：
 
 ```bash
 ln -sfn build/dev/compile_commands.json compile_commands.json

@@ -17,6 +17,7 @@ path = [
     ".clang-format",
     ".clang-tidy",
     ".clangd",
+    ".dockerignore",
     ".editorconfig",
     ".gitignore",
 ]
@@ -41,6 +42,6 @@ SPDX-FileCopyrightText = "2026 Alliance"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 [[annotations]]
-path = ["tools/**", "docker/**", "packaging/**"]
+path = ["tools/**", "docker/**", "packaging/**", ".github/**", ".devcontainer/**"]
 SPDX-FileCopyrightText = "2026 Alliance"
 SPDX-License-Identifier = "Apache-2.0"

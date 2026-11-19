@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build CI image
+        run: docker build --target ci -t teleop-ci:24.04 -f docker/Dockerfile .
+
+      - name: Configure, build and test
+        run: |
+          docker run --rm --init \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --volume "$PWD:$PWD" \
+            --workdir "$PWD" \
+            teleop-ci:24.04 \
+            bash -lc 'cmake --preset ci && cmake --build --preset ci -j"$(nproc)" && ctest --preset ci'

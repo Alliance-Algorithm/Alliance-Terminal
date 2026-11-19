@@ -30,6 +30,12 @@ endif()
 option(TELEOP_WERROR "把警告当错误" OFF)
 option(TELEOP_BUILD_TOOLS "构建模拟器与工具" ON)
 
+# ccache：装了就用；容器里 /ccache 是持久卷
+find_program(TELEOP_CCACHE ccache)
+if(TELEOP_CCACHE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${TELEOP_CCACHE}")
+endif()
+
 # ---------------------------------------------------------------------------
 # 公共编译选项：target_link_libraries(<target> PRIVATE teleop_options)
 # ---------------------------------------------------------------------------
@@ -92,4 +98,5 @@ message(STATUS "  build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  compiler   : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  werror     : ${TELEOP_WERROR}")
 message(STATUS "  lto        : ${CMAKE_INTERPROCEDURAL_OPTIMIZATION}")
+message(STATUS "  ccache     : ${TELEOP_CCACHE}")
 message(STATUS "  tools      : ${TELEOP_BUILD_TOOLS}")

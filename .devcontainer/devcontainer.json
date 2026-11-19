@@ -1,0 +1,30 @@
+{
+  "name": "Alliance Terminal (Ubuntu 24.04)",
+  "build": {
+    "dockerfile": "../docker/Dockerfile",
+    "context": "..",
+    "target": "dev"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=cached",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "remoteUser": "ubuntu",
+  "runArgs": [
+    "--network=host",
+    "--init"
+  ],
+  "mounts": [
+    "source=teleop-ccache,target=/ccache,type=volume"
+  ],
+  "containerEnv": {
+    "CCACHE_DIR": "/ccache"
+  },
+  "postCreateCommand": "ln -sfn build/dev/compile_commands.json compile_commands.json || true",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools"
+      ]
+    }
+  }
+}
