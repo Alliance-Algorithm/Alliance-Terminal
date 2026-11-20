@@ -2,10 +2,10 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.4 |
-| 状态 | **施工中**（B0、B1、B5a、B2 已完成，B2b 未开始；进度见第 9 节） |
-| 日期 | 2026-11-20 |
-| 关联文档 | `teleop-client-architecture.md`（v1.6）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.3）、`ipc-protocol.md`（v1.1） |
+| 文档版本 | v1.7 |
+| 状态 | **施工中**（B0、B1、B5a、B2、B2b 已完成；I0 的 Link/组件/launch 级已通过，`rmcs-runtime` 运行时待验证；B3/B4 未开始；进度见第 9 节） |
+| 日期 | 2026-11-21 |
+| 关联文档 | `teleop-client-architecture.md`（v1.8）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.3）、`ipc-protocol.md`（v1.1）、`logging.md` |
 
 > 本文是"**怎么建**"的施工图：顺序、目录、批次、验收标准。
 > "**为什么这么设计**"在架构文档里，本文不重复。
@@ -41,7 +41,7 @@ B0 骨架
         └─► （B3 的 MQTT 侧也可以只依赖 rm_proto，但 IPC 两端优先）
 ```
 
-> **当前优先**：B2 完成后，B2b 与桥仓 D0–D3 **并行**；I0 绿之前不开始 B3/B4。桥仓不是本计划的批次，D0–D5 见桥仓 `docs/design.md`。
+> **当前优先**：B2b 已完成；I0 的 Link/组件/launch 级已通过，收口 `rmcs-runtime` 运行时后开始 B3/B4。桥仓不是本计划的批次，D0–D5 见桥仓 `docs/design.md`。
 
 **硬约束（每批都要守）**：
 
@@ -234,13 +234,15 @@ ctest -R 'frame|seqpacket|session|control_link|ipc_headers'
 | 项 | 内容 |
 |---|---|
 | 目标 | 客户端 IPC 端成为**可运行的进程**：连接/退避、握手、上行单槽、健康、下行发送、计数；不碰 MQTT/录制/UI |
-| 交付物 | `src/core/{clock,error,latest_value_register}.hpp`（最小集，不拉 spdlog/toml）、`src/ipc/ipc_client.hpp`、`tools/ipc_probe/**`（独立可执行，**不依赖 protobuf**）、`tests/unit/test_ipc_client.cpp` |
-| 出口条件 | `ipc_probe` 能连上假 peer/桥：握手成功；收 75 Hz `UP_DATA`、发 50 Hz `DOWN_DATA`；`EAGAIN` 丢帧计数；断线退避重连；健康超时；上行单槽覆盖计数正确；`payload` 只搬不解析 |
-| 验收 | `ctest -R ipc_client` 全绿；`ipc_probe --socket … --duration 10 --down-hz 50 --stats` 打印握手/速率/计数 |
+| 交付物 | `src/core/{clock,error,latest_value_register}.hpp`（最小集，不拉 spdlog/toml）、`src/ipc/ipc_client.hpp`、`tools/ipc_probe/**`（独立可执行，**不依赖 protobuf**）、`tests/unit/{test_core,test_ipc_client}.cpp` |
+| 出口条件 | `ipc-probe` 能连上对端（真桥；单测用 socketpair）：握手成功；收 75 Hz `UP_DATA`、发 50 Hz `DOWN_DATA`；`EAGAIN` 丢帧计数；断线退避重连；健康超时；上行单槽覆盖计数正确；`payload` 只搬不解析；**无桥时** `ipc-probe --duration` 正常跑完（连接尝试/退避/最后错误），不崩溃、不阻塞 |
+| 验收 | `ctest -R ipc_client` 全绿；`ipc-probe --socket … --duration 10 --down-hz 50 --stats` 打印握手/速率/计数 |
 
 > `ipc_client` 是生产策略，不是探针专用；B4 的 `teleop-node` 直接复用它，`ipc_probe` 只是可执行外壳 + 故障注入。
 >
 > `ipc_probe` 是机器人/MQTT 侧的**测试替身**：上行只计数 `UpData.payload`，下行发硬编码的官方 `CustomByteBlock` 样例；它不进入生产路径，也不改变“客户端不解 payload”的约束。
+>
+> **无 RMCS 模式**：`IpClient` 不以对端存在为前提。`connect` 失败（`ENOENT`/`ECONNREFUSED`/`EACCES`）只计数并按 100 ms→2 s 退避，不抛异常、不退出；`try_take_up` 无数据返回 false；`queue_down` 在非 ACTIVE 时直接丢弃并计数，不排队。B4 的 `teleop-node` 依赖这个语义，在没有 RMCS 时照常启动 MQTT/录制/UI。
 
 ### I0 两端联调（0.5–1 天）
 
@@ -251,6 +253,8 @@ ctest -R 'frame|seqpacket|session|control_link|ipc_headers'
 | 出口条件 | Link 级：握手、75/50 Hz、seq/缺口、`EAGAIN`、重连、版本不匹配、握手超时、截断/超长；组件级：`rmcs_executor` 加载 `TerminalBridgeRx` + 测试源/汇，`ipc_probe` 连上；运行时：`rmcs-runtime` root + 宿主 probe，socket/uid/peercred 符合 §6.3 |
 | 验收 | 60 s 稳定；两端计数对齐；kill/restart；慢消费者；`rmcs-runtime` 验证清单全过 |
 
+> **2026-11-21 进度**：Link 级（`bridge_link_test` ↔ `ipc-probe`）、组件级（`rmcs_executor` + `terminal_test.yaml`）、launch 级（`launch-rmcs` + `rmcs_bringup/config/terminal_bridge_test.yaml`，容器 RMCS + 宿主 probe）均已通过；10 s 客户端侧 `rx_up=750`、`tx_down=500`、`gaps=0`、`down_drop=0`。**未完成**：`rmcs-runtime` root / `0666` / `--peer-uid 0`、60 s 稳定、kill/restart、慢消费者、两端计数对齐。I0 仍为 🟡。
+>
 > B3/B4 在 I0 绿之后开始。桥仓 D0–D5 的顺序与测试见桥仓 `docs/design.md`；本计划不重复。
 
 ### B3 两个模拟器（1 天）
@@ -267,9 +271,9 @@ ctest -R 'frame|seqpacket|session|control_link|ipc_headers'
 | 项 | 内容 |
 |---|---|
 | 目标 | 端到端闭环 + 落盘；B2b 的 `ipc_client` 直接复用，本批补 MQTT/录制/uilink/组装 |
-| 交付物 | `src/mqtt/**`、`src/record/**`、`src/uilink/**`（server 侧）、`src/node/main.cpp`、`packaging/systemd/teleop-node.service`、`tests/integration/test_end_to_end.cpp`（`src/core`/`src/ipc` 已在 B2b 落地） |
-| 出口条件 | `sim-demo.sh` 起 mosquitto + 两个模拟器 + `teleop-node`，产出会话目录且含 `mqtt_up.pb.zst`、`mqtt_down.pb.zst`；单槽覆盖计数正确；`systemctl stop` 优雅退出 |
-| 验收 | `ctest -R integration`；`zstd -d` 后能看到记录 |
+| 交付物 | `src/mqtt/**`、`src/record/**`、`src/uilink/**`（server 侧）、`src/node/main.cpp`、`src/core/log.hpp`、`packaging/systemd/teleop-node.service`、`tests/integration/test_end_to_end.cpp`、`tests/integration/test_no_rmcs.cpp`（无 RMCS 启动 + 恢复）（`src/core`/`src/ipc` 已在 B2b 落地） |
+| 出口条件 | `sim-demo.sh` 起 mosquitto + 两个模拟器 + `teleop-node`，产出会话目录且含 `mqtt_up.pb.zst`、`mqtt_down.pb.zst`；单槽覆盖计数正确；`systemctl stop` 优雅退出；**无 RMCS 启动时 node 照常运行，RMCS 上线后自动恢复，不重启 node** |
+| 验收 | `ctest -R integration`；`zstd -d` 后能看到记录；日志符合 [`logging.md`](logging.md)，不逐帧打印 |
 
 ### B5b GUI/GPU 容器（0.5 天，M0 之前做）
 
@@ -293,8 +297,9 @@ ctest -R 'frame|seqpacket|session|control_link|ipc_headers'
 4. 文档第 9 节已更新；
 5. 一个提交（或一组小提交）说明清楚做了什么；
 6. B2 额外：`libs/teleop_ipc` 在**独立 CMake 工程**里 `add_subdirectory` 后能编过一个最小 TU（证明桥仓可以消费）；
-7. B2b 额外：`ipc-probe --socket … --duration 10 --down-hz 50 --stats` 能连上假 peer，打印握手/速率/计数；
-8. I0 额外：两端联调的 Link/组件/运行时三级至少各跑一次，记录在桥仓。
+7. B2b 额外：`ipc-probe --socket … --duration 10 --down-hz 50 --stats` 能连上真桥（单测用 socketpair 假 peer），打印握手/速率/计数；
+8. I0 额外：两端联调的 Link/组件/运行时三级至少各跑一次，记录在桥仓；
+9. 日志：正式运行日志符合 [`logging.md`](logging.md) 的 `[时间][类别][模块]` 格式，只输出必要状态。
 
 **IPC 两端闭环验收（B2 + B2b + 桥仓 D0–D3 做完）**
 
@@ -303,6 +308,8 @@ ipc-probe --socket ~/.local/state/teleop/run/rmcs/control.sock \
           --duration 60 --down-hz 50 --stats
 # 期望：handshake ok；up ≈75 Hz；down ≈50 Hz；steady-state drops/gaps 为 0
 ```
+
+> 当前进度：Link/组件/launch 级已过（10 s，`rx_up=750`、`tx_down=500`、`gaps=0`）；上面的 60 s 与 `rmcs-runtime` root 还未跑，I0 仍为 🟡。
 
 **第一批整体验收（B0–B4 与 B5a 做完）**
 
@@ -337,15 +344,15 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | B1 协议层 | ✅ 完成 | 2026-11-19 | 32 条消息 + `topics.inc` + 两个内部链路 proto + `rm_proto` 编解码库（已改为 header-only）+ 23 个用例；在 Ubuntu 24.04 容器（protoc 3.21.12）里 `dev` 与 `ci`（`-Werror`）预设均全绿 |
 | B5a 构建容器 | ✅ 完成 | 2026-11-19 | `docker/Dockerfile`（base/dev/ci）+ `build.sh` + `dev-shell.sh` + CI 骨架；容器内 `ci` 预 configure/build/ctest 全绿 |
 | B2 IPC | ✅ 完成 | 2026-11-20 | `libs/teleop_ipc` 自包含库：frame/seqpacket/session/control_link/wire + vendored `tl::expected`；`test_frame`/`test_seqpacket`/`test_session`/`test_control_link`/`test_ipc_headers`；容器内 `dev` 与 `ci`（含头文件 `-Werror` smoke）全绿；独立 CMake 工程 `add_subdirectory` 可消费 |
-| B2b 客户端 IPC | ⬜ 未开始 | — | `core` 最小集 + `ipc_client` + `ipc_probe`；下一步 |
-| I0 两端联调 | ⬜ 未开始 | — | 客户端 probe ↔ 终端桥；桥仓 D0–D3 并行；B3/B4 之前 |
+| B2b 客户端 IPC | ✅ 完成 | 2026-11-21 | `src/core` + `IpClient` + `ipc-probe`；13 个客户端用例（握手/超时/版本/peercred/单槽/限速/`EAGAIN`/无桥退避）+ `test_core`；宿主 Debug/Release `-Werror` 全绿；Link/组件/launch 联调已过；I0 运行时见下一行 |
+| I0 两端联调 | 🟡 进行中 | 2026-11-21 | Link 级、组件级、launch 级已通过；10 s 客户端侧 `rx_up=750`、`tx_down=500`、`gaps=0`、`down_drop=0`；待 `rmcs-runtime` root、60 s、kill/restart、慢消费者、两端计数对齐 |
 | B3 模拟器 | ⬜ 未开始 | — | — |
 | B4 通信进程 | ⬜ 未开始 | — | 复用 B2b 的 `ipc_client` |
 | B5b GUI/GPU 容器 | ⬜ 未开始 | — | M0 之前做 |
 
 > 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
 >
-> B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；下一步 B2b + 桥仓骨架，终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**B2b + 桥仓 D0–D3（并行）→ I0 → B3/B4**。
+> B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；B2b 已完成；I0 的 Link/组件/launch 级已通过，下一步是 `rmcs-runtime` 运行时验收。终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**I0 运行时 → B3/B4**。
 
 ---
 
@@ -358,3 +365,6 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | v1.2 | 2026-11-20 | 调整为 **IPC 两端优先**：新增 B2b（`core` 最小集 + `ipc_client` + `ipc_probe`）与 I0（客户端 probe ↔ 终端桥三级联调）；桥仓 D0–D3 并行；B3/B4 后置；`ipc_probe` 进目录/命名/DoD/进度 |
 | v1.3 | 2026-11-20 | B2 落地：`libs/teleop_ipc` 自包含库 + 5 个测试 + 头文件 `-Werror` smoke；库命名空间定为 `teleop::link`（避免与生成的 `teleop::ipc` 冲突）；容器内 `dev`/`ci` 全绿；B2b 待开始 |
 | v1.4 | 2026-11-20 | 桥仓改为 **vendored `teleop_ipc`**：整库快照 + `add_subdirectory`，删除 FetchContent/SOURCE_DIR 依赖；共享 IPC 文档升 v1.1；桥仓构建不再访问 Alliance-Terminal |
+| v1.5 | 2026-11-20 | **B2b 落地**：`src/core`（clock/error/`LatestValueRegister`）+ `IpClient`（单 IPC 线程、握手/退避/单槽/有界下行队列/健康/计数）+ `ipc-probe`；无 RMCS 时保持 `DISCONNECTED` 并退避；新增 `test_core`/`test_ipc_client`；架构 §4.3/§5.9/§5.10 同步单线程、无 RMCS、失败分类口径 |
+| v1.6 | 2026-11-21 | 文档跟进：B2b 标完成；I0 标进行中并记录 Link/组件/launch 通过、10 s 750/500、无 gaps/drop；剩余 `rmcs-runtime` root/60 s/restart/慢消费者/两端计数；B3/B4 仍未开始 |
+| v1.7 | 2026-11-21 | 新增日志规范 [`logging.md`](logging.md)：`[时间][类别][模块]详情`、模块/级别约定、只记必要状态；B4 交付物加 `src/core/log.hpp`，DoD 加日志格式检查 |

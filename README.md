@@ -18,6 +18,13 @@ RoboMaster 自定义终端的操作端：把 RMCS 的控制数据经 MQTT 送进
 - **单槽**：状态类数据只保留最新一份，拥塞时覆盖而不是排队。
 - **隔离**：前端崩溃不影响控制转发与数据录制；通信进程崩溃由 systemd 拉起。
 
+## 当前进度
+
+- B0、B1、B5a、B2、B2b 已完成；
+- I0 的 Link、组件、`launch-rmcs` 级已通过，`rmcs-runtime` 运行时验收待做；
+- B3 模拟器、B4 通信进程、B5b GUI/GPU 容器尚未开始；
+- 详细状态见[施工计划](docs/teleop-client-implementation-plan.md)。
+
 ## 通信结构
 
 ![](./docs/framework.png)
@@ -40,7 +47,7 @@ Topic 固定 32 个（上行 1–9、下行 10–32），名字与官方协议�
 
 ## RMCS 终端桥
 
-控制链路的 RMCS 侧是一个独立仓库：[`rmcs_terminal_bridge`](https://github.com/Alliance-Algorithm/rmcs_terminal_bridge)。它是 RMCS 的 ROS2 包（子模块引入），作为 UDS **server** 监听 `control.sock`；本项目的 `teleop-node` 作为 client 连接。
+控制链路的 RMCS 侧是一个独立仓库：[`rmcs_terminal_bridge`](https://github.com/Alliance-Algorithm/rmcs_terminal_bridge)。它是 RMCS 的 ROS2 包（手动放置，不强制子模块），作为 UDS **server** 监听 `control.sock`；本项目的 `teleop-node` 作为 client 连接。
 
 数据分三层，**客户端只搬 IPC 的 `payload` 字节，不解析官方消息**：
 
@@ -157,13 +164,27 @@ journalctl --user -u teleop-node -f
 | socket | `~/.local/state/teleop/run/`（`rmcs/control.sock`、`ui.sock`） |
 | 录制会话 | `~/.local/share/teleop/sessions/<时间戳>/` |
 
+### IPC 探针
+
+B2b 的 `ipc-probe` 可以单独运行：没有 RMCS 时保持 `DISCONNECTED` 并按 100 ms→2 s 退避，不会阻塞或退出。当前还没有 `teleop-node`，`ipc-probe` 是唯一可运行的客户端端点。
+
+```bash
+# 无 RMCS 自测：正常跑完并打印连接尝试/退避/最后错误
+./build/dev/tools/ipc_probe/ipc-probe --duration 10 --down-hz 50 --stats
+
+# 连真桥（rmcs-runtime 里是 root）：校验对端 uid 并跑 60 s
+./build/dev/tools/ipc_probe/ipc-probe \
+    --socket ~/.local/state/teleop/run/rmcs/control.sock \
+    --peer-uid 0 --duration 60 --down-hz 50 --stats
+```
+
 ## 目录
 
 ```
 proto/      官方协议的转录实现（Apache-2.0）
 libs/       可复用头文件库：rm_proto、teleop_ipc（Apache-2.0）
 src/        通信进程与前端（GPL-3.0-or-later）
-tools/      模拟器：teleop_sim、referee_sim（Apache-2.0）
+tools/      IPC 探针与模拟器：ipc_probe、teleop_sim、referee_sim（Apache-2.0）
 tests/      单元 / 集成 / fuzz
 docker/     开发容器
 docs/       设计文档
@@ -176,6 +197,7 @@ docs/       设计文档
 | [架构与选型](docs/teleop-client-architecture.md) | 三进程、链路、协议、录制、可靠性 |
 | [自定义终端协议](docs/custom-terminal-protocol.md) | 官方 32 个 topic 的整理稿与实现要点 |
 | [开发容器](docs/teleop-client-dev-environment.md) | 环境基线、容器参数、发布兼容性 |
+| [日志规范](docs/logging.md) | `[时间][类别][模块]` 格式、模块名、记录边界 |
 | [IPC 协议](docs/ipc-protocol.md) | 控制链路帧格式、payload 边界、终端桥契约、rmcs-runtime 部署 |
 | [施工计划](docs/teleop-client-implementation-plan.md) | 批次划分、目录、验收标准与进度追踪 |
 | [AI 助手约定](Agent.md) | 提交格式、header-only、注释规则、代码与架构约束 |

@@ -1,3 +1,7 @@
+#include "core/clock.hpp"
+#include "core/error.hpp"
+#include "core/latest_value_register.hpp"
+#include "ipc/ipc_client.hpp"
 #include "teleop_ipc/control_link.hpp"
 #include "teleop_ipc/error.hpp"
 #include "teleop_ipc/fd.hpp"

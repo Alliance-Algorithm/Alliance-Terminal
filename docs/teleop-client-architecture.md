@@ -2,9 +2,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.6 |
+| 文档版本 | v1.8 |
 | 状态 | **架构封板**（第 19 节仅剩外部对接信息，不阻塞实现） |
-| 日期 | 2026-11-20 |
+| 日期 | 2026-11-21 |
 | 目标平台 | Linux x86_64 桌面（笔记本 / NUC），X11 与 Wayland |
 | 项目性质 | 非商业，开源交流 |
 | 变更方式 | 标注 **【定稿】** 的条目为已决策；变更需新增 ADR（`docs/adr/NNNN-*.md`） |
@@ -40,6 +40,12 @@
 > 2. **IPC 线格式定稿**：32 字节头全大端、双版本号（帧格式/语义）、每端独立 `session_id`/`seq`、单帧 65536/body 65504；详见 [`docs/ipc-protocol.md`](ipc-protocol.md)（与桥仓副本同内容，修改必须同步）。
 > 3. **payload 三层边界**：数据段（作者）→ 官方 envelope（终端桥）→ IPC envelope（`teleop_ipc`）；客户端只搬 `UpData.payload`/`DownData.payload`，**不解、不改**。
 > 4. **部署回填**：终端桥跑在 `rmcs-runtime`（root），socket `0666` + `allowed_uid=1000`，节点 `allowed_peer_uid=0`；详见 [`teleop-client-dev-environment.md`](teleop-client-dev-environment.md) §6.3。
+
+> **v1.7 的三处回填（实现前收口）**
+> 1. **下行可靠性口径**：`DOWN_DATA` 的“可靠”只指 SEQPACKET 传输层；应用层 `send` 返回 `EAGAIN` 时按数据帧规则**丢弃并计数、seq 已消耗**，不重试同一 seq，也不阻塞 MQTT 接收线程。
+> 2. **IPC 线程模型**：`Session` 非线程安全，收/发必须同一线程；通信进程只保留**一个 `ipc` 线程**（连接/握手/收/发/健康），MQTT 侧经单槽/有界队列与它交互。
+> 3. **无 RMCS 独立运行**：通信进程不以终端桥存在为前提；RMCS 未启动时 IPC 保持 `DISCONNECTED` 并退避，MQTT/录制/展示链路照常；上行不产生数据，下行丢弃并计数，RMCS 上线后自动恢复。
+> 4. **失败分类**：`connect` 错误退避；握手超时/帧解码错误按 LOST 退避；帧头/`HelloAck` 版本不匹配、peercred 不匹配按 FATAL 不重连；`HEALTH` 丢失只置状态，不主动断连。
 
 ---
 
@@ -332,8 +338,7 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 
 | 进程 | 线程 | 调度 | 备注 |
 |---|---|---|---|
-| 通信 | `ipc_rx` | 默认 | 持续 drain |
-| 通信 | `ipc_tx` | 默认 | 有界队列，满则拒绝 |
+| 通信 | `ipc` | 默认 | 单线程：连接/握手/收/发/健康；MQTT 侧经单槽/有界队列交互 |
 | 通信 | `mqtt_io` | 默认 | Paho 自管 |
 | 通信 | `mqtt_pub` | 默认 | 单槽 |
 | 通信 | `recorder` | 默认/低 | 有界 2 s，满则丢录制 |
@@ -344,6 +349,8 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 | 前端 | UI 主线程 | 默认 | 60 Hz，只读快照 |
 
 **默认不做实时化**。`SCHED_FIFO`、绑核、`mlockall` 均为"实测超标再开"。
+
+> `teleop_ipc::link::Session` **非线程安全**：`send`/`recv` 必须同一线程。不要为收/发各开线程；B4 若把 IPC 并入 epoll 主循环，也必须保证只有一个线程碰 `Session`。
 
 ### 4.4 部署与生命周期【定稿】
 
@@ -361,6 +368,8 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 | 停止 | `systemctl --user stop teleop-node`，优雅退出（见 §4.5） |
 | 日志 | `journalctl --user -u teleop-node` |
 | 前端未启动 | 通信进程照常转发，**但录制开不了**（数据、视频都不录） |
+
+> **无 RMCS 也能跑**：`teleop-node` 不以 `control.sock` 存在为前提。RMCS 未启动时，IPC 保持 `DISCONNECTED` 并指数退避；MQTT、录制、展示链路照常工作。上行 `CustomControl` 不产生（不伪造、不重发旧值）；下行 `CustomByteBlock` 无处可送，丢弃并计数。RMCS 上线后自动连接，不重启客户端。
 
 > **为什么不用 `/run/user/<uid>`**：容器可能先于用户登录启动，那时该目录不存在，Docker 会把 mount 源当成空目录并**以 root 创建**，之后权限全乱。home 下的路径一直都在。
 
@@ -458,7 +467,7 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 | 1 | `HELLO` | C→S | 连接时 | 必须 |
 | 2 | `HELLO_ACK` | S→C | 连接时 | 必须 |
 | 3 | `UP_DATA` | S→C | 75 Hz | 携带 `CustomControl`；**可丢**（丢即丢，取最新） |
-| 4 | `DOWN_DATA` | C→S | ≤50 Hz | 携带 `CustomByteBlock`；可靠 |
+| 4 | `DOWN_DATA` | C→S | ≤50 Hz | 携带 `CustomByteBlock`；传输层可靠，应用层 `EAGAIN` 丢弃并计数 |
 | 5 | — | — | — | 保留 |
 | 6 | `HEALTH` | S→C | 1–2 Hz | 尽力 |
 | 100–199 | **预留给对端扩展** | — | — | 未知类型忽略并计数 |
@@ -537,7 +546,7 @@ message Health { uint32 state = 1; uint32 load_pct = 2; }
 ### 5.6 数据语义
 
 - `UpData`：每帧都是**当前控制快照**（绝对值，不是增量），所以丢任意帧不影响正确性，拥塞时丢旧留新；
-- `DownData`：来自服务器的 50 Hz 数据块，客户端只负责搬运；丢一帧由 RMCS 侧按缺口处理。
+- `DownData`：来自服务器的 50 Hz 数据块，客户端只负责搬运；`send` 返回 `EAGAIN` 时丢弃并计数（seq 已消耗），丢一帧由 RMCS 侧按 seq 缺口处理，不重试同一 seq。
 
 字段用途：
 
@@ -584,9 +593,11 @@ TerminalBridge ──send──▶ 内核缓冲 ──recv──▶ 通信进程
 
 1. **生产者侧单槽**：终端桥在 `send` 返回 `EAGAIN` 时**丢弃本帧并保留最新值**，绝不阻塞 RMCS 的控制循环；
 2. **内核缓冲要小**：`SO_SNDBUF`/`SO_RCVBUF` 设 2–4 帧；
-3. **消费者持续 drain**：`ipc_rx` 一直读到 `EAGAIN`，不能因 MQTT 慢而停读；
+3. **消费者持续 drain**：`ipc` 线程一直读到 `EAGAIN`，不能因 MQTT 慢而停读；
 4. **MQTT 侧单槽**：新帧覆盖旧帧，不排队；
 5. **丢弃留痕**：每处覆盖计数，UI 常驻显示，录制打标。
+
+**下行同理**：`DOWN_DATA` 的 `send` 返回 `EAGAIN` 时丢弃并计数（seq 已消耗），前置的小容量有界队列满时丢最旧；不阻塞 MQTT 接收线程。
 
 > 结果：从 RMCS 产出到 MQTT 出网，最坏延迟 = 一个内核缓冲深度 + 一次发布，不随运行时长增长。
 
@@ -596,23 +607,36 @@ TerminalBridge ──send──▶ 内核缓冲 ──recv──▶ 通信进程
 |---|---|---|
 | 无 `UP_DATA` | > 200 ms | UI 黄色告警 |
 | 无 `UP_DATA` | > 1 s | UI 红色 + 状态置离线 + 录制打标 |
-| `HEALTH` 丢失 | > 3 s | 判定 RMCS 侧失联 |
+| `HEALTH` 丢失 | > 3 s | 判定 RMCS 侧失联；只置状态，不主动断连 |
 | 恢复 | — | 自动恢复，记一次事件 |
+
+判活口径按 `ipc-protocol.md` §3.2：只看 `HEALTH`。如果 `UP_DATA` 还在但 `HEALTH` 停了，按契约仍判失联，但保留 `last_up_ns` 作为诊断信息，数据继续转发。
 
 ### 5.10 连接状态机
 
 ```
 CONNECTING ──connect──▶ HANDSHAKE ──HELLO/HELLO_ACK──▶ ACTIVE
      ▲                      │                              │
-     │                  版本不兼容                  握手/心跳超时 / POLLHUP
+     │              版本/peercred 不匹配            对端关闭 / 帧错误
      │                      ▼                              ▼
      └──── backoff ────   FATAL                         LOST
 ```
 
 - 版本检查有两层：帧头 `u8`（帧格式）和 `Hello`/`HelloAck` 的 `u32`（语义），v1 都精确等于 1。
 - 版本不匹配时，桥回一个带自己版本的 `HELLO_ACK` 再关闭，便于节点日志打印双方版本；节点收到不匹配的 ACK 记录后关闭。
-- 握手超时 2 s（`handshake_timeout_ms`）；超时关闭并计数。
-- 未知 `msg_type` 跳过并计数；帧/长度异常关闭并计数。
+- 握手超时 2 s（`handshake_timeout_ms`）；超时关闭并计数，进入 LOST，按退避重连，**不 FATAL**。
+- 未知 `msg_type` 跳过并计数；帧/长度/body 解码异常关闭并计数，进入 LOST。
+- `protocol_rev` / `capabilities` 只记录，不参与兼容判断。
+
+失败分类：
+
+| 类别 | 情况 | 动作 |
+|---|---|---|
+| 可恢复 | `connect` 返回 `ENOENT`/`ECONNREFUSED`/`EACCES`/`EAGAIN` | 退避重试；对端可能只是没启动 |
+| LOST | 握手 2 s 超时、帧/长度/body 解码错误、对端关闭 | 关闭后退避重连 |
+| FATAL | 帧头/`HelloAck` 版本不匹配、`SO_PEERCRED` 不匹配 | 不重连；打印双方版本/uid 后退出 |
+
+`HEALTH` 3 s 丢失只置 `rmcs_alive=false`，不断连；socket 关闭才进入 LOST。无对端不是错误：客户端可以长时间处于 DISCONNECTED/CONNECTING，MQTT/录制/UI 不受影响（见 §4.4）。
 
 重连：`100 ms → 200 → 400 → … → 2 s` 封顶，±20% 抖动。重连后清空状态，等下一帧，**不做 resync 请求**。
 
@@ -1150,6 +1174,7 @@ src/ui/theme/dark.json light.json
 | 前端进程崩溃 | 通信进程检测 UDS 断开 | ✅ 不受影响 | ❌ 发不出 | ✅ 继续 | ❌ 断（留缺口） | 重开前端，接着录 |
 | 前端慢/卡死 | 通信进程 `EAGAIN` | ✅ 不受影响 | ❌ | ✅ 继续 | ❌ 掉帧 | 恢复后追平 |
 | 终端桥重启 | `POLLHUP` | ❌ 无控制 | ✅ 仍可发 | 打标 | 无影响 | 指数退避重连 |
+| RMCS 未启动 / 长时间离线 | `connect` 返回 `ENOENT`/`ECONNREFUSED`，退避重试 | ❌ 无控制 | ✅ 仍可发 | ✅ MQTT 下行照录；`mqtt_up` 无数据并打标 | ✅ | RMCS 启动后自动连接，不重启客户端 |
 | MQTT / 服务器断开 | Paho 回调 | ❌ 发不出 | ❌ | ✅ 继续 | ✅ 继续 | 自动重连 |
 | 网络中断 | 同上 | ❌ | ❌ | ✅ | ✅ | 同上 |
 | 整机断电 | — | ❌ | ❌ | 断 | 断 | 全部自启，分段可恢复 |
@@ -1165,6 +1190,7 @@ src/ui/theme/dark.json light.json
 | **慢消费者测试** | 前端故意慢读 10 s：通信进程不受影响，丢弃计数正确，恢复后追平 |
 | 连续 `kill -9` 前端 20 次 | 控制链路零中断，数据录制无缺口 |
 | `kill -9` 通信进程 | 0.2 s 内拉起，重连恢复 |
+| **无 RMCS 单独运行** | 30 min 进程不退出；MQTT/录制/UI 正常；连接尝试计数增长；RMCS 上线后自动恢复，不重启客户端 |
 | 24 h soak | fd 与内存无增长，无丢弃（正常网络） |
 | `kill -9` 后回放 | 前 N 段完整可播，manifest 可恢复 |
 | UI 帧率 | 60 fps，10 min 掉帧 < 1% |
@@ -1253,12 +1279,29 @@ CI 额外跑 ASan/UBSan/TSan。
 | 事件循环 | 裸 `epoll` + `eventfd` |
 | 并发 | `std::thread` + `std::atomic` + `LatestValueRegister` |
 | 时间 | `clock_gettime(CLOCK_MONOTONIC)` |
-| 日志 | spdlog（async） |
+| 日志 | spdlog（async），输出格式见 [`logging.md`](logging.md)：`[ssss][LEVEL][MODULE] ...` |
 | 配置 | TOML（toml++） |
 | 错误 | `std::expected` / `tl::expected` |
 | 序列化 | protobuf（发行版 3.21） |
 | 压缩 | zstd |
 | 指标 | HDR 直方图 + 调试面板 |
+
+#### 14.5.1 日志格式
+
+正式日志统一为：
+
+```text
+[时间][类别][模块]详情
+[0001][INFO][UDS] xxxx
+```
+
+- `时间`：进程启动后的秒数，4 位补零；
+- `类别`：`DEBUG` / `INFO` / `WARN` / `ERROR`；
+- `模块`：`NODE` / `UDS` / `IPC` / `MQTT` / `REC` / `UI` / `VIDEO` / `CFG`；
+- 只记录状态变化、重试、周期摘要和错误，不逐帧打印；
+- 热路径禁日志，周期摘要由计数聚合。
+
+完整规则见 [`logging.md`](logging.md)。`ipc-probe` 默认每秒输出简洁状态摘要（`--stats` 兼容保留），不逐项打印完整计数表；不算正式运行日志。
 
 ### 14.6 测试
 
@@ -1461,3 +1504,5 @@ DCO（不用 CLA）；SPDX 头 + `REUSE.toml`；README 双语；`ipc-protocol.md
 | **v1.4** | **2026-11-19** | **协议落地回填**：方向口径统一为"上行=发往服务器/机器人"；协议固定 32 个 topic、单连接、clientID=机器人编号、无认证、最高 QoS1；**RMCS 只保留 `CustomControl`/`CustomByteBlock` 两条通道**（IPC 从 32 缩到 2）；**前端可发 7 条触发性指令**；键鼠 v1 不实现；录制改为上行/下行/视频三份、不录 IPC；删除 `veh/{id}/status`（LWT/retained）；3D 场地地图移出 v1 |
 | **v1.5** | **2026-11-19** | **部署与桌面壳**：启动模型定为用户级（`systemd --user` + 桌面程序），不建系统用户；socket 移到 `~/.local/state/teleop/run/`，控制 socket 单独子目录 bind mount 进 RMCS 容器；新增 **§4.5 托盘与进程控制**（点 X 隐藏、菜单五项、退出连带停进程、关闭/退出两处二次确认、比赛中提示、托盘不可用兜底） |
 | **v1.6** | **2026-11-20** | **IPC 与终端桥定稿**：AT-Bridge 更名 `rmcs_terminal_bridge`；帧头全大端、双版本号、每端 session/seq、65536/65504 上限；payload 三层边界（数据段/官方 envelope/IPC envelope），客户端不解 payload；展示链路消息号 1–7；`rmcs-runtime` 部署（0666 + allowed_uid 1000 + 节点 allowed_peer_uid 0）；新增 `docs/ipc-protocol.md` |
+| **v1.7** | **2026-11-20** | **实现前收口**：`DOWN_DATA` 的“可靠”限定为 SEQPACKET 传输层，应用层 `EAGAIN` 丢弃并计数；IPC 改为单线程（`Session` 非线程安全）；明确无 RMCS 时通信进程独立运行（`DISCONNECTED` + 退避，MQTT/录制/UI 照常）；补失败分类（可恢复 / LOST / FATAL）与健康超时只置状态 |
+| **v1.8** | **2026-11-21** | **日志规范**：正式日志统一 `[时间][类别][模块]详情`（如 `[0001][INFO][UDS] ...`）；只记状态/重试/周期摘要/错误，不逐帧；新增 [`logging.md`](logging.md)；`ipc-probe --stats` 保留为诊断输出 |
