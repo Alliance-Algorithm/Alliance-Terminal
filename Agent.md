@@ -17,6 +17,7 @@ RoboMaster 自定义终端的操作端客户端：两个进程（通信进程 + 
 | 2 | `docs/custom-terminal-protocol.md` | 官方 32 个 topic 的字段与坑 |
 | 3 | `docs/teleop-client-implementation-plan.md` | 当前批次、目录、验收标准 |
 | 4 | `docs/teleop-client-dev-environment.md` | 环境基线、容器参数、发布兼容性 |
+| 5 | `docs/ipc-protocol.md` | IPC 线格式、payload 边界、终端桥契约、rmcs-runtime 部署（**共用文档**，桥仓有同内容副本） |
 
 ---
 
@@ -66,6 +67,38 @@ Add client framework
 - 更新施工计划第 9 节：做了什么、没做什么、遗留什么。
 - 汇报顺序：结论 → 验证结果（命令 + 输出）→ 设计取舍 → 下一步。
 
+### 3.7 一律走分支 + PR（不许直接推 main）
+
+`main` 受保护，**永远不要直接 `git push origin main`**，也不要直接在主分支上提交。
+
+流程：
+
+1. 从最新的 `main` 开分支，名字用 `feat/…`、`fix/…`、`docs/…`、`chore/…`（英文、小写、短横线）；
+2. 在分支上完成功能与测试；
+3. 推送分支，开 PR 到 `main`；
+4. PR 必须两个预设都绿（`dev` 与 `ci`），描述写清：改了什么、怎么验证、有什么取舍；
+5. 合并用 **squash**，PR 标题就是最终的提交信息（英文、首字母大写、动词开头、正文列小点）；
+6. 合并后删掉分支。
+
+例外只有一种：用户明确说"直接推到 main"。即便如此，也要先确认 CI 能过。
+
+### 3.8 文档归属与共用文档
+
+- **任何文档不得直接放在 `~/Workspace/Alliance/` 根目录**；只放在所属仓的 `docs/` 或仓内约定位置。
+- 只属于客户端的文档放本仓；只属于 `rmcs_terminal_bridge` 的放桥仓；**两边都要用的文档两边各一份，内容必须一致**。
+- 当前共用文档（两份）：
+  - `Alliance-Terminal/docs/ipc-protocol.md`
+  - `rmcs_terminal_bridge/docs/ipc-protocol.md`
+- 共用文档头部必须写：**对端路径、版本、最后同步日期、正文 SHA256、修改提醒**。
+- 修改共用文档时**必须同时修改对端**，并更新两边头部的版本/日期/指纹；只改一边视为未完成。
+- 正文一致性检查（两边结果应等于头部 `正文指纹`）：
+
+  ```bash
+  sed -n '/^## 0\./,$p' docs/ipc-protocol.md | sha256sum
+  ```
+
+- 桥仓自己的文档规则写在它自己的 `docs/design.md` 顶部或 `AGENTS.md`；两边规则冲突时，以所在仓的规则为准。
+
 ---
 
 ## 4. 数据流铁律
@@ -77,6 +110,9 @@ Add client framework
 5. **丢弃必须计数**，计数要能被 UI 和录制看到。
 6. **前端只能发 7 条指令**：`MapClickCmd`、`AssemblyCommand`、`RobotPerformanceSelectionCommand`、`CommonCommand`、`RuneActivateCommand`、`DartCommand`、`SentryCtrlCommand`；其余通道一律拒绝。
 7. **回放只读文件**，回放期间禁用发指令。
+8. **客户端不解 payload**：`UpData.payload` / `DownData.payload` 是官方 `CustomControl` / `CustomByteBlock` 的序列化字节；只有终端桥 `rmcs_terminal_bridge` 组/解，客户端只搬运。`libs/teleop_ipc` 不包含这两个官方消息的 codec。
+
+> `rmcs_terminal_bridge` 是 RMCS 仓里的独立子模块（GPL-3.0-only），遵循 RMCS 的构建/编码规范；**本文件的 header-only、`.hpp` 单文件等规则不适用于它**。它消费 `libs/teleop_ipc`，线格式契约见 `docs/ipc-protocol.md`。
 
 ---
 

@@ -2,9 +2,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.5 |
+| 文档版本 | v1.6 |
 | 状态 | **架构封板**（第 19 节仅剩外部对接信息，不阻塞实现） |
-| 日期 | 2026-11-19 |
+| 日期 | 2026-11-20 |
 | 目标平台 | Linux x86_64 桌面（笔记本 / NUC），X11 与 Wayland |
 | 项目性质 | 非商业，开源交流 |
 | 变更方式 | 标注 **【定稿】** 的条目为已决策；变更需新增 ADR（`docs/adr/NNNN-*.md`） |
@@ -35,6 +35,12 @@
 > 2. **socket 移到 home 下** `~/.local/state/teleop/run/`：`rmcs/control.sock` 单独一个子目录、只把它 bind mount 进 RMCS 容器；`ui.sock` 留在宿主。不用 `$XDG_RUNTIME_DIR`——容器可能先于登录启动，那时该目录不存在。
 > 3. **新增 §4.5 托盘与进程控制**：点 X 隐藏到托盘；右键菜单含 面板/状态/通信进程/设置/退出；**"退出"会一并停止通信进程**；关闭通信进程需二次确认（比赛中额外提示）；托盘不可用时照样隐藏并提示"再启动一次可唤回"。
 
+> **v1.6 的四处回填（IPC 协议与 RMCS 终端桥定稿）**
+> 1. **原 AT-Bridge 更名为 `rmcs_terminal_bridge`（RMCS 终端桥）**：RMCS 侧的 ROS2 包，作为子模块引入；本文正文用"终端桥"指代，代码/路径用包名。
+> 2. **IPC 线格式定稿**：32 字节头全大端、双版本号（帧格式/语义）、每端独立 `session_id`/`seq`、单帧 65536/body 65504；详见 [`docs/ipc-protocol.md`](ipc-protocol.md)（与桥仓副本同内容，修改必须同步）。
+> 3. **payload 三层边界**：数据段（作者）→ 官方 envelope（终端桥）→ IPC envelope（`teleop_ipc`）；客户端只搬 `UpData.payload`/`DownData.payload`，**不解、不改**。
+> 4. **部署回填**：终端桥跑在 `rmcs-runtime`（root），socket `0666` + `allowed_uid=1000`，节点 `allowed_peer_uid=0`；详见 [`teleop-client-dev-environment.md`](teleop-client-dev-environment.md) §6.3。
+
 ---
 
 ## 0. 摘要
@@ -43,7 +49,7 @@
 
 | 进程 | 归属 | 一句话职责 |
 |---|---|---|
-| **RMCS**（含 AT-Bridge 模块） | 独立项目 | 控制 + 安全；把内部消息通过 UDS 送出 |
+| **RMCS**（含终端桥 `rmcs_terminal_bridge`） | 独立项目 | 控制 + 安全；把内部消息通过 UDS 送出 |
 | **通信进程** | 本项目 | 唯一接触 RMCS 与 MQTT 的进程；转发 + 录制 + 健康上报 |
 | **前端进程** | 本项目 | 视频、面板、3D 地图、视频录制、回放 |
 
@@ -93,7 +99,7 @@
                                │ MQTT
 ┌─ RMCS 进程 ─────┐   UDS   ┌──┴───────────────┐   UDS   ┌─ 前端进程 ────────┐
 │ RMCS 控制 + 安全 │◀───────▶│   通信进程         │◀───────▶│ 视频 / 面板 / 3D   │
-│ AT-Bridge       │         │ 转发+录制+健康     │         │ 视频录制 / 回放    │
+│ TerminalBridge  │         │ 转发+录制+健康     │         │ 视频录制 / 回放    │
 └─────────────────┘         └──────────────────┘         └───────────────────┘
                                       ▲
                                       │ UDP（图传）
@@ -210,7 +216,7 @@
 │                  │          │                          │          │                          │
 │  控制 + 安全      │◀────────▶│  ipc ─▶ fanout ─┬─▶ mqtt │          │  视频管线 ─┬─▶ 面板/3D   │
 │                  │  控制链路 │                 ├─▶ 录制 │◀────────▶│            └─▶ 视频录制  │
-│  AT-Bridge       │          │      ui_server ◀┘        │  展示链路 │  面板 ◀─▶ 回放器         │
+│  TerminalBridge  │          │      ui_server ◀┘        │  展示链路 │  面板 ◀─▶ 回放器         │
 └──────────────────┘          └───────────┬──────────────┘          └──────────────────────────┘
                                           │ MQTT
                                           ▼
@@ -221,7 +227,7 @@
 
 | 链路 | 两端 | 方向 | 传输 | 说明 |
 |---|---|---|---|---|
-| **控制链路** | AT-Bridge ↔ 通信进程 | `CustomControl` ↑ / `CustomByteBlock` ↓ | UDS `SEQPACKET` | 唯一接触 RMCS 的地方，**只有 2 个通道** |
+| **控制链路** | 终端桥 ↔ 通信进程 | `CustomControl` ↑ / `CustomByteBlock` ↓ | UDS `SEQPACKET` | 唯一接触 RMCS 的地方，**只有 2 个通道** |
 | **MQTT 链路** | 通信进程 ↔ 裁判系统服务器 | 上行 9 / 下行 23 | MQTT 3.1.1 **单连接** | 唯一接触外部网络的地方 |
 | **展示链路** | 通信进程 ↔ 前端进程 | 下行数据 ↓ / 指令与本地操作 ↑ | UDS `SEQPACKET` | 前端指令只走 MQTT，**绝不**进入控制链路 |
 | **图传支路** | 图传发送端 → 前端进程 | 单向 | UDP 3334 | 不经过通信进程 |
@@ -307,7 +313,7 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 
 | 部件 | 职责 |
 |---|---|
-| `ipc_client` | 连 AT-Bridge，收 `CustomControl`/HEALTH，发 `CustomByteBlock`，维护 session/超时 |
+| `ipc_client` | 连终端桥，收 `CustomControl`/HEALTH，发 `CustomByteBlock`，维护 session/超时 |
 | `mqtt` | **单连接**；上行单槽 + 指令队列；下行按类别分发 |
 | `fanout` | 下行按通道分流：前端一份（全部 23 条）+ RMCS 一份（仅 `CustomByteBlock`） |
 | `ui_server` | 接受前端连接、推下行数据、收 `UI_CMD`（录制控制 / 白名单指令） |
@@ -350,7 +356,7 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 | socket 目录 | `~/.local/state/teleop/run/`（0700） |
 | 控制 socket | `~/.local/state/teleop/run/rmcs/control.sock` —— **只把这个子目录 bind mount 进 RMCS 容器** |
 | 展示 socket | `~/.local/state/teleop/run/ui.sock` —— 宿主内部，不挂进容器 |
-| 校验 | `SO_PEERCRED` 只做兜底（uid 与当前用户一致） |
+| 校验 | `SO_PEERCRED` 只做兜底（同 uid；`rmcs-runtime` 的 root 例外见 §8 与 [`ipc-protocol.md`](ipc-protocol.md)） |
 | 启动 | 登录 → systemd --user 拉起通信进程 → 连 `control.sock`（RMCS 未就绪则指数退避） |
 | 停止 | `systemctl --user stop teleop-node`，优雅退出（见 §4.5） |
 | 日志 | `journalctl --user -u teleop-node` |
@@ -361,7 +367,9 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 > **容器侧的三个前提**（需要 RMCS 项目配合）：
 > 1. 容器以**宿主 uid** 运行（`--user $(id -u):$(id -g)`），否则 0700 目录进不去、socket 属主也不对；
 > 2. 容器参数加 `-v $HOME/.local/state/teleop/run/rmcs:$HOME/.local/state/teleop/run/rmcs`，内外路径一致；
-> 3. AT-Bridge 启动时先 `unlink` 旧 socket 再 `bind`；通信进程把 `ECONNREFUSED` 当作"对方未就绪"，继续退避重试。
+> 3. 终端桥启动时先 `unlink` 旧 socket 再 `bind`；通信进程把 `ECONNREFUSED` 当作"对方未就绪"，继续退避重试。
+
+> **例外：实际部署环境是 `rmcs-runtime`（root）**。该镜像的 entrypoint/ssh/avahi 都以 root 跑，终端桥也在 root 进程里，无法满足"同 uid"。采用的折中是：宿主目录仍 `0700` 属主 1000，桥把 socket `chmod 0666`，桥 `allowed_uid=1000`、节点 `allowed_peer_uid=0`；目录权限仍是真正的闸门，peercred 退化为白名单。完整的挂载、配置、验证见 [`ipc-protocol.md` §8](ipc-protocol.md) 与 [`teleop-client-dev-environment.md` §6.3](teleop-client-dev-environment.md)。
 
 ### 4.5 托盘与进程控制【定稿】
 
@@ -403,11 +411,11 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 
 ---
 
-## 5. 控制链路（AT-Bridge ↔ 通信进程）【定稿】
+## 5. 控制链路（终端桥 ↔ 通信进程）【定稿】
 
 ### 5.1 选型
 
-> **`AF_UNIX` + `SOCK_SEQPACKET`，单条双向连接；AT-Bridge 作为 server（listen），通信进程 connect。**
+> **`AF_UNIX` + `SOCK_SEQPACKET`，单条双向连接；终端桥作为 server（listen），通信进程 connect。**
 
 延迟：单程 **30–100 µs**（75 Hz 下非瓶颈）。
 
@@ -423,20 +431,25 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 
 ### 5.2 帧格式
 
-```
-偏移  字段            类型   说明
-0     magic           u16    0x544C ('TL')
-2     proto_version   u8     当前 1
-3     msg_type        u8     见 5.3
-4     flags           u16    保留，未定义位必须忽略
-6     body_len        u16    protobuf 长度
-8     session_id      u64    每次连接重新生成
-16    seq             u64    发送方单调递增
-24    t_mono_ns       i64    CLOCK_MONOTONIC
-32    body            ...    protobuf
-```
+32 字节头，**全部多字节字段大端**；`magic` 按两个字节 `0x54 0x4C`（`'T','L'`）比较。完整规范见 [`docs/ipc-protocol.md`](ipc-protocol.md)。
 
-`session_id` / `seq` / `t_mono_ns` 以帧头为准，body 内不重复。无 CRC。
+| 偏移 | 字段 | 类型 | 说明 |
+|---:|---|---|---|
+| 0 | `magic` | 2 × `u8` | `0x54 0x4C` |
+| 2 | `proto_version` | `u8` | **帧格式版本**，当前 1 |
+| 3 | `msg_type` | `u8` | 见 5.3 |
+| 4 | `flags` | `u16` | 保留，未定义位必须忽略 |
+| 6 | `body_len` | `u16` | body 字节数，上限 65504 |
+| 8 | `session_id` | `u64` | 发送方每次连接生成；0 无效；每端独立 |
+| 16 | `seq` | `u64` | 发送方逐帧递增，首帧 1；丢帧也消耗 |
+| 24 | `t_mono_ns` | `i64` | 发送时刻，`CLOCK_MONOTONIC` |
+| 32 | `body` | `body_len × u8` | 对应 `msg_type` 的 protobuf |
+
+- 单帧上限 **65536**（头 + body），body 上限 **65504**；控制链路 `Session` 再收紧到 512，展示链路 8192。
+- 帧头 `proto_version` 是帧格式版本；`Hello`/`HelloAck` 的 `u32 proto_version` 是语义协议版本，v1 都精确等于 1。
+- 接收方用 `recvmsg(MSG_TRUNC)` 拿真实长度；截断、超长、`32 + body_len` 不符都关闭并计数。
+- `session_id` / `seq` / `t_mono_ns` 以帧头为准，body 内不重复。无 CRC。
+- `flags` 未定义位忽略；当前发送方写 0。
 
 ### 5.3 消息类型
 
@@ -446,9 +459,12 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 | 2 | `HELLO_ACK` | S→C | 连接时 | 必须 |
 | 3 | `UP_DATA` | S→C | 75 Hz | 携带 `CustomControl`；**可丢**（丢即丢，取最新） |
 | 4 | `DOWN_DATA` | C→S | ≤50 Hz | 携带 `CustomByteBlock`；可靠 |
+| 5 | — | — | — | 保留 |
 | 6 | `HEALTH` | S→C | 1–2 Hz | 尽力 |
-| 100–199 | **预留给对端扩展** | — | — | — |
-| 200+ | 实验性 | — | — | 默认忽略 |
+| 100–199 | **预留给对端扩展** | — | — | 未知类型忽略并计数 |
+| 200+ | 实验性 | — | — | 默认忽略并计数 |
+
+> 展示链路复用同一套帧头，但消息号不同（见 §7.2）；两条链路各自一个 socket，数字重叠没有歧义。
 
 > `CMD` / `CMD_ACK` / `LINK_STATUS` 已删除：新协议下客户端不需要向 RMCS 回执，也不需要把 MQTT 连接状态上报给 RMCS。
 
@@ -458,8 +474,8 @@ ipc_client ──▶ CustomControl ──┬──▶ mqtt_tx（单槽）──�
 
 | id | 通道 | 方向 | 频率 | payload |
 |---|---|---|---|---|
-| 1 | `CustomControl` | AT-Bridge → 通信进程 | 75 Hz | `CustomControl.data`（≤60 B，**当前状态快照**） |
-| 2 | `CustomByteBlock` | 通信进程 → AT-Bridge | 50 Hz | `CustomByteBlock.data`（≤300 B） |
+| 1 | `CustomControl` | 终端桥 → 通信进程 | 75 Hz | `CustomControl.data`（≤60 B，**当前状态快照**） |
+| 2 | `CustomByteBlock` | 通信进程 → 终端桥 | 50 Hz | `CustomByteBlock.data`（≤300 B） |
 
 - 两者都是**不透明字节**，通信进程不解析、不改写；
 - 其余 30 个 topic 完全不经过 IPC；
@@ -505,6 +521,19 @@ message Health { uint32 state = 1; uint32 load_pct = 2; }
 - `body` 就是上表里的**具体消息本身**，不再套一层 `Envelope`（`msg_type` 已经说明类型了）；
 - `session_id` / `seq` / `t_mono_ns` 只在 32 字节帧头里，body 内不重复。
 
+**payload 边界（硬约束）**：
+
+| 层 | 内容 | 谁组/解 |
+|---|---|---|
+| 数据段 | `CustomControl.data` / `CustomByteBlock.data`，0–60 / 0–300 B | 自定义控制作者 |
+| 官方 envelope | 序列化后的 `CustomControl` / `CustomByteBlock` | **终端桥**（`rmcs_terminal_bridge`） |
+| IPC envelope | `UpData` / `DownData` + 32 字节帧头 | 节点/桥共用 `teleop_ipc` |
+
+- `UpData.payload` 是官方 `CustomControl` 的序列化字节；`DownData.payload` 是官方 `CustomByteBlock` 的序列化字节。
+- **通信进程只搬 `payload`，不解、不改、不补字节**；官方 envelope 的序列化/反序列化只在终端桥里。
+- `libs/teleop_ipc` 不包含 `CustomControl` / `CustomByteBlock` 的 codec，也不依赖 protobuf；IPC 消息的 codec 手写，用 `ipc.pb` 的字节做对照测试。
+- 客户端的 `rm_proto` 仍供前端/模拟器使用，但不进入节点的 IPC 数据路径。
+
 ### 5.6 数据语义
 
 - `UpData`：每帧都是**当前控制快照**（绝对值，不是增量），所以丢任意帧不影响正确性，拥塞时丢旧留新；
@@ -515,8 +544,12 @@ message Health { uint32 state = 1; uint32 load_pct = 2; }
 | 字段 | 用途 |
 |---|---|
 | 帧头 `seq` | 本地丢失检测、记录缺口、录制打标 |
-| 帧头 `session_id` | 检测 AT-Bridge 重启 |
+| 帧头 `session_id` | 检测终端桥重启 |
 | `t_src_ns` | **A2 延迟指标的起点**（RMCS 产出 → publish 返回） |
+
+- `session_id` 每端每次连接各生成一个随机 `u64`（0 无效），不是一条连接共用一个；对端从第一帧学到，同一连接内变化视为协议错误。
+- `seq` 每端独立，首帧 1；数据帧 `EAGAIN` 丢弃时也消耗 seq，接收端用 `seq - last_seq - 1` 统计缺口；`HELLO_ACK` 重试复用同一 seq。
+- 重连后 `session_id`、`seq` 基线全部重置，不做 resync 请求。
 
 ### 5.7 两条数据的路径
 
@@ -529,7 +562,7 @@ RMCS 控制循环（75 Hz）
 机器人 → 图传链路 → 服务器
    → 通信进程收到 `CustomByteBlock`（50 Hz，QoS0）
    → DownData（IPC） + UI_DATA（展示链路）
-   → AT-Bridge → RMCS 内部接口；前端按需显示
+   → 终端桥 → RMCS 内部接口；前端按需显示
 ```
 
 **三条明确的责任划分**：
@@ -545,11 +578,11 @@ RMCS 控制循环（75 Hz）
 ### 5.8 反压必须被切断（最重要的工程约束）
 
 ```
-AT-Bridge ──send──▶ 内核缓冲 ──recv──▶ 通信进程 ──publish──▶ MQTT
+TerminalBridge ──send──▶ 内核缓冲 ──recv──▶ 通信进程 ──publish──▶ MQTT
            ↑ 客户端慢时 EAGAIN          ↑ MQTT 慢时积压
 ```
 
-1. **生产者侧单槽**：AT-Bridge 在 `send` 返回 `EAGAIN` 时**丢弃本帧并保留最新值**，绝不阻塞 RMCS 的控制循环；
+1. **生产者侧单槽**：终端桥在 `send` 返回 `EAGAIN` 时**丢弃本帧并保留最新值**，绝不阻塞 RMCS 的控制循环；
 2. **内核缓冲要小**：`SO_SNDBUF`/`SO_RCVBUF` 设 2–4 帧；
 3. **消费者持续 drain**：`ipc_rx` 一直读到 `EAGAIN`，不能因 MQTT 慢而停读；
 4. **MQTT 侧单槽**：新帧覆盖旧帧，不排队；
@@ -571,19 +604,24 @@ AT-Bridge ──send──▶ 内核缓冲 ──recv──▶ 通信进程 ─�
 ```
 CONNECTING ──connect──▶ HANDSHAKE ──HELLO/HELLO_ACK──▶ ACTIVE
      ▲                      │                              │
-     │                  主版本不兼容                 心跳超时 / POLLHUP
+     │                  版本不兼容                  握手/心跳超时 / POLLHUP
      │                      ▼                              ▼
      └──── backoff ────   FATAL                         LOST
 ```
+
+- 版本检查有两层：帧头 `u8`（帧格式）和 `Hello`/`HelloAck` 的 `u32`（语义），v1 都精确等于 1。
+- 版本不匹配时，桥回一个带自己版本的 `HELLO_ACK` 再关闭，便于节点日志打印双方版本；节点收到不匹配的 ACK 记录后关闭。
+- 握手超时 2 s（`handshake_timeout_ms`）；超时关闭并计数。
+- 未知 `msg_type` 跳过并计数；帧/长度异常关闭并计数。
 
 重连：`100 ms → 200 → 400 → … → 2 s` 封顶，±20% 抖动。重连后清空状态，等下一帧，**不做 resync 请求**。
 
 ### 5.11 安全与资源边界
 
-- `SO_PEERCRED` 校验；
+- `SO_PEERCRED` 校验；`rmcs-runtime`（root）下桥的 `allowed_uid=1000`、节点的 `allowed_peer_uid=0`，见 [`ipc-protocol.md` §8](ipc-protocol.md)；
 - `socket(..., SOCK_NONBLOCK | SOCK_CLOEXEC)`；`accept4` 同理；
 - `recvmsg` + `MSG_TRUNC` 检测截断；
-- 单帧上限 64 KB，超限断开；
+- 单帧上限 **65536**、body 上限 **65504**，超限断开；
 - 热路径无动态扩容；fd 数量固定。
 
 ### 5.12 时钟
@@ -674,14 +712,17 @@ CONNECTING ──connect──▶ HANDSHAKE ──HELLO/HELLO_ACK──▶ ACTIV
 
 ### 7.2 消息类型
 
-| 类型 | 方向 | 频率 | 可靠性 |
-|---|---|---|---|
-| `UI_HELLO` / `UI_HELLO_ACK` | 双向 | 连接时 | 必须 |
-| `UI_DATA` | B→U | ≤50 Hz | **可丢**（每通道单槽） |
-| `UI_HEALTH` | B→U | 1–2 Hz | 尽力 |
-| `UI_RECORD_STATE` | B→U | 变化时 | 可靠 |
-| `UI_CMD` | U→B | 罕见 | 可靠 + ack |
-| `UI_CMD_ACK` | B→U | 随命令 | 必须 |
+| 值 | 类型 | 方向 | 频率 | 可靠性 |
+|---:|---|---|---|---|
+| 1 | `UI_HELLO` | 双向 | 连接时 | 必须 |
+| 2 | `UI_HELLO_ACK` | 双向 | 连接时 | 必须 |
+| 3 | `UI_DATA` | B→U | ≤50 Hz | **可丢**（每通道单槽） |
+| 4 | `UI_HEALTH` | B→U | 1–2 Hz | 尽力 |
+| 5 | `UI_RECORD_STATE` | B→U | 变化时 | 可靠 |
+| 6 | `UI_CMD` | U→B | 罕见 | 可靠 + ack |
+| 7 | `UI_CMD_ACK` | B→U | 随命令 | 必须 |
+
+> 展示链路与控制链路共用帧头和 1/2 号握手语义；3 以上各自解析，数字重叠不冲突（不同 socket）。
 
 ### 7.3 协议（`proto/ui_link.proto`）
 
@@ -1108,7 +1149,7 @@ src/ui/theme/dark.json light.json
 | 通信进程崩溃 | systemd / 启动器 | ❌ 中断 | ❌ | 断 | 断 | 拉起后重连 |
 | 前端进程崩溃 | 通信进程检测 UDS 断开 | ✅ 不受影响 | ❌ 发不出 | ✅ 继续 | ❌ 断（留缺口） | 重开前端，接着录 |
 | 前端慢/卡死 | 通信进程 `EAGAIN` | ✅ 不受影响 | ❌ | ✅ 继续 | ❌ 掉帧 | 恢复后追平 |
-| AT-Bridge 重启 | `POLLHUP` | ❌ 无控制 | ✅ 仍可发 | 打标 | 无影响 | 指数退避重连 |
+| 终端桥重启 | `POLLHUP` | ❌ 无控制 | ✅ 仍可发 | 打标 | 无影响 | 指数退避重连 |
 | MQTT / 服务器断开 | Paho 回调 | ❌ 发不出 | ❌ | ✅ 继续 | ✅ 继续 | 自动重连 |
 | 网络中断 | 同上 | ❌ | ❌ | ✅ | ✅ | 同上 |
 | 整机断电 | — | ❌ | ❌ | 断 | 断 | 全部自启，分段可恢复 |
@@ -1144,10 +1185,10 @@ teleop-client/
 │  ├─ rm/*.proto               # 32 条官方消息（字段唯一真源）
 │  ├─ topics.inc               # 32 个 topic：编号/名字/QoS/谁能发
 │  ├─ ipc.proto  ui_link.proto
-├─ libs/teleop_ipc/            # Apache-2.0，独立 target（给 AT-Bridge 用）
+├─ libs/teleop_ipc/            # Apache-2.0，独立 target（frame/seqpacket/session/wire/control_link；给 rmcs_terminal_bridge 用）
 ├─ src/
 │  ├─ core/    # 时钟、日志、错误、配置、LatestValueRegister、Fd RAII
-│  ├─ ipc/     # uds_seqpkt、framing、session、channel 字典
+│  ├─ ipc/     # 连终端桥、单槽、健康；framing/session 用 teleop_ipc
 │  ├─ mqtt/    # paho 封装、单槽发布、重连
 │  ├─ record/  # sidecar writer、manifest
 │  ├─ node/    # 通信进程 main（组装 ipc/mqtt/record/ui_server）
@@ -1159,12 +1200,14 @@ teleop-client/
 │  ├─ app/     # 前端 main
 │  └─ uilink/  # 展示链路 client
 ├─ assets/                     # Git LFS
-├─ tools/teleop_sim/           # Apache-2.0，AT-Bridge 参考实现 + 故障注入
+├─ tools/teleop_sim/           # Apache-2.0，终端桥参考实现 + 故障注入
 ├─ tools/referee_sim/          # Apache-2.0，假裁判系统：发 23 条下行 / 收 9 条上行 / 假图传
 ├─ tests/  unit / integration / fuzz
 ├─ docs/   architecture.md  ipc-protocol.md  adr/
 └─ packaging/ appimage/ deb/ docker-dev/
 ```
+
+> 终端桥 `rmcs_terminal_bridge` 是 RMCS 仓里的独立子模块，**不在本树**；它的组件/部署/测试在桥仓文档，线格式契约见 [`docs/ipc-protocol.md`](ipc-protocol.md)。
 
 ### 14.2 构建
 
@@ -1317,7 +1360,7 @@ DCO（不用 CLA）；SPDX 头 + `REUSE.toml`；README 双语；`ipc-protocol.md
 
 ### 16.5 为"交流"必须有的三样
 
-1. **`teleop_sim`**：AT-Bridge 的参考实现（75 Hz 快照、下行数据块、故障注入），Apache-2.0；
+1. **`teleop_sim`**：终端桥的参考实现（75 Hz 快照、下行数据块、故障注入），Apache-2.0；
 2. **`referee_sim`**：假裁判系统（发 23 条下行、收 9 条上行、假图传），Apache-2.0；
 3. **样例会话**：`--replay sample_session/` 一条命令即可看完整效果。
 
@@ -1383,6 +1426,10 @@ DCO（不用 CLA）；SPDX 头 + `REUSE.toml`；README 双语；`ipc-protocol.md
 
 | 术语 | 含义 |
 |---|---|
+| 终端桥 / TerminalBridge | RMCS 侧的 `rmcs_terminal_bridge` ROS2 包；UDS server，组/解官方 `CustomControl`/`CustomByteBlock` envelope |
+| 数据段 | `CustomControl.data` / `CustomByteBlock.data` 字段内容（0–60 / 0–300 B），由自定义控制作者组/解 |
+| 官方 envelope | 序列化后的 `CustomControl` / `CustomByteBlock`，由终端桥组/解 |
+| IPC envelope | `UpData` / `DownData` + 32 字节帧头，客户端与桥共用 `teleop_ipc` |
 | ENU | 东-北-天局部坐标，米，Z-up |
 | SEQPACKET | 面向连接、可靠、保消息边界的 Unix socket 类型 |
 | 全局状态快照 | 每帧包含全部状态的完整表示，非增量 |
@@ -1413,3 +1460,4 @@ DCO（不用 CLA）；SPDX 头 + `REUSE.toml`；README 双语；`ipc-protocol.md
 | **v1.3** | **2026-11-19** | **环境落地回填**：基线定为 Ubuntu 24.04；Qt 6.8 → **发行版 6.4**（无 `QQuickRhiItem`，视频面走 `QQuickFramebufferObject`）；protobuf Conan → **发行版 3.21**；CI 基线统一 24.04；新增 **§14.7 开发容器**（GUI 进容器、三个前提、延迟影响）；明确**部署不带容器**；移除"发行版基线"待定项 |
 | **v1.4** | **2026-11-19** | **协议落地回填**：方向口径统一为"上行=发往服务器/机器人"；协议固定 32 个 topic、单连接、clientID=机器人编号、无认证、最高 QoS1；**RMCS 只保留 `CustomControl`/`CustomByteBlock` 两条通道**（IPC 从 32 缩到 2）；**前端可发 7 条触发性指令**；键鼠 v1 不实现；录制改为上行/下行/视频三份、不录 IPC；删除 `veh/{id}/status`（LWT/retained）；3D 场地地图移出 v1 |
 | **v1.5** | **2026-11-19** | **部署与桌面壳**：启动模型定为用户级（`systemd --user` + 桌面程序），不建系统用户；socket 移到 `~/.local/state/teleop/run/`，控制 socket 单独子目录 bind mount 进 RMCS 容器；新增 **§4.5 托盘与进程控制**（点 X 隐藏、菜单五项、退出连带停进程、关闭/退出两处二次确认、比赛中提示、托盘不可用兜底） |
+| **v1.6** | **2026-11-20** | **IPC 与终端桥定稿**：AT-Bridge 更名 `rmcs_terminal_bridge`；帧头全大端、双版本号、每端 session/seq、65536/65504 上限；payload 三层边界（数据段/官方 envelope/IPC envelope），客户端不解 payload；展示链路消息号 1–7；`rmcs-runtime` 部署（0666 + allowed_uid 1000 + 节点 allowed_peer_uid 0）；新增 `docs/ipc-protocol.md` |
