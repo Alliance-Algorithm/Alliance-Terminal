@@ -1,8 +1,9 @@
 syntax = "proto3";
 
-// 控制链路（AT-Bridge ↔ 通信进程）的消息体。
+// 控制链路（rmcs_terminal_bridge ↔ 通信进程）的消息体。
 // 帧头（32 字节）不在 protobuf 里：magic/版本/类型/body_len/session_id/seq/t_mono_ns
-// 见 docs/teleop-client-architecture.md §5.2。
+// 帧头全大端；完整规范见 docs/ipc-protocol.md。
+// payload 是官方 envelope 的序列化字节：客户端只搬运，不解析；组/解在终端桥。
 
 package teleop.ipc;
 
@@ -18,18 +19,18 @@ message HelloAck {
   string protocol_rev  = 3;  // 官方协议版本，如 "2027-V1.0.0"
 }
 
-// 上行：RMCS 给客户端的控制快照，原样发到 MQTT
+// 上行：终端桥给客户端的控制快照，原样发到 MQTT
 message UpData {
   uint32 channel  = 1;  // 固定 1 = CustomControl
-  int64  t_src_ns = 2;  // RMCS 产出时刻（同机单调钟）
-  bytes  payload  = 3;  // CustomControl 序列化字节，零修改
+  int64  t_src_ns = 2;  // 终端桥采样时刻（同机单调钟）
+  bytes  payload  = 3;  // CustomControl 序列化字节；客户端不解析、零修改
 }
 
-// 下行：服务器给机器人的自定义数据块，原样转给 RMCS
+// 下行：服务器给机器人的自定义数据块，原样转给终端桥
 message DownData {
   uint32 channel   = 1;  // 固定 2 = CustomByteBlock
   int64  t_recv_ns = 2;  // 客户端从 MQTT 收到的时刻
-  bytes  payload   = 3;  // CustomByteBlock 序列化字节，零修改
+  bytes  payload   = 3;  // CustomByteBlock 序列化字节；客户端不解析、零修改
 }
 
 message Health {

@@ -2,11 +2,11 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v0.2（决策稿） |
-| 日期 | 2026-11-19 |
+| 文档版本 | v0.3（决策稿） |
+| 日期 | 2026-11-20 |
 | 状态 | 环境决策已定；**本文不包含 Dockerfile**，只定义"要什么、为什么、怎么验收" |
-| 适用范围 | 本仓库的开发、单测、集成测试、CI |
-| 关联文档 | `teleop-client-architecture.md`（v1.4） |
+| 适用范围 | 本仓库的开发、单测、集成测试、CI；含 RMCS 终端桥的 socket 部署 |
+| 关联文档 | `teleop-client-architecture.md`（v1.6）、`ipc-protocol.md`（v1.0） |
 
 ---
 
@@ -214,6 +214,59 @@ install -d -m 0700 ~/.local/state/teleop/run ~/.local/state/teleop/run/rmcs
 ```
 
 否则容器里的进程连不上，或者只能用 `--privileged` 糊过去——**那就测不出任何东西了**。
+
+### 6.3 例外：RMCS 终端桥跑在 `rmcs-runtime`（root）
+
+实际部署的 RMCS 用 `qzhhhi/rmcs-runtime` 镜像，entrypoint / ssh / avahi / `service rmcs` 都以 **root** 跑，终端桥也在 root 进程里，**无法满足 §6.2 的"同 uid"**。折中方案见下；完整线格式契约见 [`ipc-protocol.md`](ipc-protocol.md) §8。
+
+| 项 | 值 | 原因 |
+|---|---|---|
+| 宿主目录 | `~/.local/state/teleop/run/rmcs`，`0700`，属主 1000 | 目录权限是真正的闸门 |
+| 容器挂载 | `-v /home/<user>/.local/state/teleop/run/rmcs:/home/<user>/.local/state/teleop/run/rmcs` | 桥和节点看到同一个 socket |
+| 桥 `socket_path` | 宿主绝对路径 | 容器 `HOME=/root`，不能用 `~` |
+| 桥 `socket_mode` | `"0666"` | root 创建的 socket 如果 0600，uid 1000 连不上 |
+| 桥 `allowed_uid` | `1000` | 桥 euid 0，默认"同 euid"检查会拒绝节点 |
+| 节点 `allowed_peer_uid` | `0` | 节点 euid 1000，对端是 root |
+
+```bash
+# 宿主：先建目录（必须在第一次启动容器前）
+install -d -m 0700 ~/.local/state/teleop/run ~/.local/state/teleop/run/rmcs
+
+# 容器：加挂载（其余参数不变）
+docker run -d --restart=always --privileged --network=host \
+    -v /dev:/dev \
+    -v /home/pigeon/.local/state/teleop/run/rmcs:/home/pigeon/.local/state/teleop/run/rmcs \
+    qzhhhi/rmcs-runtime:latest
+```
+
+```yaml
+# operator 的 executor YAML
+terminal_bridge:
+  ros__parameters:
+    socket_path: /home/pigeon/.local/state/teleop/run/rmcs/control.sock
+    socket_mode: "0666"
+    allowed_uid: 1000
+    send_rate_hz: 75.0
+    health_rate_hz: 1.0
+    protocol_rev: "2027-V1.0.0"
+    handshake_timeout_ms: 2000
+```
+
+- 安全口径：目录 `0700` 挡住其他本地用户；root 是受信任的；socket `0666` 只对能进目录的 1000/root 有效；peercred 是白名单，不是同 uid 边界。
+- 如果目录是 `0755` 或由 Docker 以 root 创建，立刻改回 `0700` 属主 1000；否则其他本地用户也能连。
+- 桥启动失败（目录没挂、权限不对）只 log + 1 Hz 重试，**不阻止 RMCS 启动**。
+- 运行时安装：桥在开发容器里 colcon 构建，`sync-remote` 同步 `rmcs_ws/install` 到 `/rmcs_install`；`pluginlib` 从 `ament_index` 找到桥插件。
+- 如果以后改回 dev 容器/原生（uid 1000）：`socket_mode="0600"`、桥 `allowed_uid=-1`、节点 `allowed_peer_uid=-1`，目录仍 `0700`。
+
+**验证清单**
+
+1. 宿主 `ls -ld ~/.local/state/teleop/run/rmcs` → `drwx------ pigeon`；
+2. 容器内 `ls -ld /home/pigeon/.local/state/teleop/run/rmcs` → 同一目录；
+3. 桥启动后 `ls -l control.sock` → `srw-rw-rw- root root`；
+4. 节点连上；桥日志 `peer uid=1000`，节点日志 `peer uid=0`；
+5. 杀节点 → 重连；杀容器 → 节点退避重连；
+6. `sudo -u nobody` 连不上（目录 0700）；
+7. `journalctl --user -u teleop-node` 无 `EACCES`/`ECONNREFUSED` 循环。
 
 ---
 

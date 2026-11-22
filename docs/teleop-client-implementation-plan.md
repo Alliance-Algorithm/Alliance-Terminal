@@ -2,10 +2,10 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.0 |
-| 状态 | **施工中**（B0、B1、B5a 已完成，B2 未开始；进度见第 9 节） |
-| 日期 | 2026-11-19 |
-| 关联文档 | `teleop-client-architecture.md`（v1.5）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.2） |
+| 文档版本 | v1.12 |
+| 状态 | **施工中**（B0、B1、B5a、B2、B2b 已完成；I0 Link/组件/launch 和 600 s 基线已通过，**runtime 因外部依赖挂起**；下一阶段 B3/B4） |
+| 日期 | 2026-11-22 |
+| 关联文档 | `teleop-client-architecture.md`（v1.8）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.3）、`ipc-protocol.md`（v1.1）、`logging.md` |
 
 > 本文是"**怎么建**"的施工图：顺序、目录、批次、验收标准。
 > "**为什么这么设计**"在架构文档里，本文不重复。
@@ -17,10 +17,10 @@
 
 | 项 | 结论 |
 |---|---|
-| 施工顺序 | **先配套，后界面**：协议层 → IPC → 模拟器 → 通信进程 → 容器；Qt 与视频放到 M0/M3 |
-| 批次 | **B0 ~ B5**，每批一个可独立验收的出口 |
-| 工期估算 | B0 0.5 天、B1 1.5 天、B5a 0.5 天、B2 1.5 天、B3 1 天、B4 2.5 天、B5b 0.5 天（合计 5–6.5 个工作日） |
-| 第一批做完的标志 | 一条命令跑通"模拟器 → 通信进程 → 模拟器"，落出 `mqtt_up.pb.zst` / `mqtt_down.pb.zst` |
+| 施工顺序 | **先把 IPC 两端闭环，再做其余**：协议层 → IPC 库 → 客户端 IPC 策略 + 终端桥 → 两端联调 → 模拟器 → 通信进程的 MQTT/录制/UI；Qt 与视频放到 M0/M3 |
+| 批次 | **B0 ~ B5 + B2b + I0**；桥仓 D0–D5 是外部并行批次 |
+| 工期估算 | B0 0.5、B1 1.5、B5a 0.5、B2 1.5、B2b 1.5、I0 0.5–1、B3 1、B4 2.5、B5b 0.5（客户端合计 6–7 天；桥仓约 3 天，并行） |
+| 优先目标 | **先**让 `ipc_probe` ↔ 终端桥跑通 75/50 Hz、重连、故障注入；**再**用模拟器跑通 MQTT 端到端并落出 `mqtt_up.pb.zst` / `mqtt_down.pb.zst` |
 | v1 明确不做 | 3D 地图、键鼠输入、多客户端、音频、云端 |
 
 ---
@@ -31,17 +31,25 @@
 B0 骨架
   └─► B1 协议层（proto + topic 表 + 编解码库）
         ├─► B5a 构建/测试容器（Dockerfile + dev-shell + CI 骨架）
-        │     └─► B2 IPC 层 ──► B3 两个模拟器 ──► B4 通信进程
-        │                                            └─► B5b GUI/GPU 容器 ──► M0 视频 spike ──► M3 前端
-        └─► （B3 也可以只依赖 rm_proto，先跑 MQTT 侧）
+        │     └─► B2 teleop_ipc（自包含库）
+        │           ├─► B2b 客户端 IPC（core 最小集 + ipc_client + ipc_probe）
+        │           │        └─► I0 两端联调（客户端 ↔ 终端桥）
+        │           └─► 桥仓 D0–D5（外部，vendor snapshot）
+        │                    └─► I0（与 B2b 汇合）
+        │                          └─► B3 两个模拟器 ──► B4 通信进程（MQTT/录制/UI）
+        │                                                  └─► B5b GUI/GPU 容器 ──► M0 视频 spike ──► M3 前端
+        └─► （B3 的 MQTT 侧也可以只依赖 rm_proto，但 IPC 两端优先）
 ```
+
+> **当前优先**：B2b 已完成；I0 的 Link/组件/launch 级已通过，收口 `rmcs-runtime` 运行时后开始 B3/B4。桥仓不是本计划的批次，D0–D5 见桥仓 `docs/design.md`。
 
 **硬约束（每批都要守）**：
 
 1. `teleop-node` 的依赖树里不出现 Qt / GStreamer（CMake target 依赖天然保证 + CI grep 兜底）；
 2. 转发路径不改 payload 字节（`bytes` 原样进原样出）；
-3. 单槽：`LatestValueRegister` 之外不允许出现无界队列；
-4. 每批结束时 `ctest` 必须全绿，且 `cmake --preset release` 能编过。
+3. **客户端不解 payload**：`UpData.payload` / `DownData.payload` 是官方 envelope 的序列化字节，只有终端桥组/解；客户端库不包含 `CustomControl`/`CustomByteBlock` codec；
+4. 单槽：`LatestValueRegister` 之外不允许出现无界队列；
+5. 每批结束时 `ctest` 必须全绿，且 `cmake --preset release` 能编过。
 
 ---
 
@@ -69,11 +77,11 @@ Alliance-Terminal/
 ├─ libs/
 │  ├─ rm_proto/ ★                Apache-2.0：语义 ↔ 字节（header-only）
 │  │  └─ include/rm_proto/{topics,codec}.hpp
-│  └─ teleop_ipc/ ★              Apache-2.0：帧头 + SEQPACKET + 握手（header-only）
-│     └─ include/teleop_ipc/{frame,seqpacket,session}.hpp
+│  └─ teleop_ipc/ ★              Apache-2.0：帧头 + SEQPACKET + 握手 + IPC codec（header-only、自包含）
+│     └─ include/teleop_ipc/{frame,seqpacket,session,control_link,wire}.hpp
 ├─ src/
 │  ├─ core/ ★                    时钟 / 日志 / 错误 / 配置 / LatestValueRegister / Fd RAII
-│  ├─ ipc/ ★                     连 AT-Bridge：收 CustomControl、发 CustomByteBlock
+│  ├─ ipc/ ★                     连终端桥：单槽、健康、重连；framing/session 用 teleop_ipc
 │  ├─ mqtt/ ★                    Paho 封装 / 单槽发布 / 指令队列 / 限速
 │  ├─ record/ ★                  mqtt_up、mqtt_down 写入器 + manifest
 │  ├─ node/ ★                    通信进程 main + epoll 事件循环
@@ -85,7 +93,8 @@ Alliance-Terminal/
 │  ├─ geo/                       WGS84 ↔ ECEF ↔ ENU（v1 不做）
 │  └─ scene/                     3D 地图（v1 不做）
 ├─ tools/
-│  ├─ teleop_sim/ ★              假 AT-Bridge（75 Hz / 50 Hz + 故障注入）
+│  ├─ ipc_probe/ ★               独立 IPC 探针（无 protobuf；客户端 IPC 端联调用）
+│  ├─ teleop_sim/ ★              假终端桥（75 Hz / 50 Hz + 故障注入）
 │  └─ referee_sim/ ★             假裁判系统（发 23 条、收 8 条、假图传）
 ├─ tests/
 │  ├─ unit/ ★
@@ -97,8 +106,10 @@ Alliance-Terminal/
 ├─ docker/ ★                     Dockerfile（base/dev/ci）+ dev-shell.sh + compose
 ├─ scripts/ ★                    sim-demo.sh、fmt.sh
 ├─ .github/workflows/ci.yml      代码能编之后再配
-└─ docs/                         已有四份文档 + adr/
+└─ docs/                         五份文档 + adr/（含 ipc-protocol.md）
 ```
+
+> 终端桥 `rmcs_terminal_bridge` 是 RMCS 仓里的独立子模块，**不在本树、不列入本计划的批次**；本计划只保证 `teleop_ipc` 是自包含子目录；桥仓 vendor 一份快照，线格式契约见 `docs/ipc-protocol.md`。
 
 ---
 
@@ -110,9 +121,12 @@ rm_proto ────────┬──► teleop_sim
                  └──► teleop_ui（M3）
 
 teleop_ipc ──────┬──► teleop_sim
-                 └──► teleop_node
+                 ├──► teleop_node
+                 ├──► ipc_probe（经 src/ipc/ipc_client）
+                 └──► rmcs_terminal_bridge（外部仓，vendor snapshot）
 
-core ──┬──► ipc ──────┐
+core ──┬──► ipc ──┬──► teleop_node
+       │          └──► ipc_probe
        ├──► mqtt ─────┼──► teleop_node
        ├──► record ───┤
        └──► uilink ───┘
@@ -124,6 +138,8 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 |---|---|
 | 通信进程不依赖 UI 框架 | CMake target 依赖里根本没有 Qt/GStreamer；CI 再 `grep -R "Qt\|gst" src/{core,ipc,mqtt,record,node,uilink}` 兜底 |
 | 协议层可被别的项目复用 | `proto/`、`libs/` 用 Apache-2.0，且不依赖 `src/` |
+| `teleop_ipc` 可被桥仓消费 | 库自包含：不调 `project()`、不用顶层 target、测试不进库的 CMake；独立 CMake 工程能 `add_subdirectory` |
+| 客户端不解析 payload | `libs/teleop_ipc` 不包含 `CustomControl`/`CustomByteBlock` codec；节点只搬 `UpData.payload`/`DownData.payload`；代码评审兜底 |
 | 前端不能碰控制链路 | `uilink` 里不存在通往 `ipc` 的调用；代码评审 + 单测断言 |
 
 ---
@@ -135,12 +151,14 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 1 | proto package | `rm.terminal`（官方 32 条）、`teleop.ipc`、`teleop.ui` | 官方未给包名；只影响命名空间，不影响线格式 |
 | 2 | topic 编号 | **上行 1–9、下行 10–32**（按整理稿顺序） | 本地概念，固定后录制/调试/UI 三处一致 |
 | 3 | protobuf 代码 | **构建时生成**，不提交生成物 | 避免与 `.proto` 不一致 |
-| 4 | 错误类型 | `tl::expected`（FetchContent） | 文档定 C++20，`std::expected` 是 C++23 |
+| 4 | 错误类型 | `tl::expected` **vendored 单头文件**（v1.3.1，CC0-1.0） | 容器没有代理时 FetchContent 会卡在 configure；vendor 可离线、可复现 |
 | 5 | 第三方库 | protobuf / spdlog / GTest / Paho **用系统包**；toml++ FetchContent | 24.04 仓库都有；toml++ 是轻量头文件库 |
 | 6 | MQTT | `MQTTAsync` | 75 Hz 单槽需要非阻塞发布 |
 | 7 | 事件循环 | 裸 `epoll` + `eventfd` | 架构 §14.5 |
 | 8 | 日志 | spdlog（async，热路径禁日志） | 架构 §14.5 |
 | 9 | 代码组织 | **header-only**：一个组件 = 一个 `.hpp`，库做成 `INTERFACE` target；只有 `main.cpp`、测试文件、`protoc` 生成物是 `.cpp` | 便于阅读与跳转；避免声明/实现漂移 |
+| 10 | IPC 编解码 | **手写** `control_link.hpp` + `wire.hpp`，不依赖 protobuf；测试用 `ipc.pb` 的字节对照 | RMCS 镜像没有 protobuf 开发包；桥侧无法 `protoc` |
+| 11 | 终端桥 | **独立仓** `rmcs_terminal_bridge`（GPL-3.0-only）+ RMCS 子模块；vendor `libs/teleop_ipc` 快照（Apache-2.0，保留来源/许可证） | 桥不属于客户端仓；客户端只保留线格式契约 |
 
 ---
 
@@ -148,16 +166,20 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 
 | 项 | 约定 |
 |---|---|
-| 二进制 | `teleop-node`（通信进程）、`teleop-client`（前端）、`teleop-sim`、`referee-sim` |
+| 二进制 | `teleop-node`（通信进程）、`teleop-client`（前端）、`ipc-probe`（IPC 联调/故障注入）、`teleop-sim`、`referee-sim` |
 | systemd unit | `teleop-node.service`（用户级） |
 | socket | `~/.local/state/teleop/run/rmcs/control.sock`、`~/.local/state/teleop/run/ui.sock` |
 | 配置 | `~/.config/teleop/node.toml`、`~/.config/teleop/ui.toml` |
 | 录制 | `~/.local/share/teleop/sessions/<YYYYMMDD_HHMMSS>/` |
 | 日志 | journald（`journalctl --user -u teleop-node`） |
-| C++ 命名空间 | `teleop::core` / `teleop::ipc` / `teleop::mqtt` / `teleop::record` / `teleop::uilink`；协议代码 `rm::terminal` |
+| C++ 命名空间 | `libs/teleop_ipc` 用 **`teleop::link`**（避免与 `ipc.pb.h` 生成的 `teleop::ipc` 同名类型冲突）；`src` 用 `teleop::core` / `teleop::ipc` / `teleop::mqtt` / `teleop::record` / `teleop::uilink`；协议代码 `rm::terminal` |
+| IPC 客户端 | `teleop::ipc::IpClient`（生产策略，header-only；内部用 `teleop::link`）；`tools/ipc_probe` 只是可执行外壳；不依赖 protobuf |
+| 终端桥 | 包 `rmcs_terminal_bridge`（RMCS 子模块）；组件 `TerminalBridgeRx`（owner）/ `TerminalBridgeTx`（partner）；YAML 实例 `terminal_bridge`；接口 `/terminal/custom_control`、`/terminal/custom_byte_block` |
+| 线格式文档 | `docs/ipc-protocol.md`（客户端与桥的共同契约） |
 | 提交信息 | **英文**；首行首字母大写、直接用动词说清本轮改了什么（`Add ...` / `Fix ...` / `Update ...` / `Remove ...`），≤ 72 字符；不写 `feat:`/`chore:` 之类前缀；正文用短横线列小点；模板见 `.gitmessage` |
 | 代码组织 | **header-only**：组件 = 单个 `.hpp`，不建 `.hpp`/`.cpp` 配对；库用 CMake `INTERFACE` target |
 | 提交时机 | **不自动提交**：改动留在工作区，由用户决定何时 commit / push |
+| 分支与 PR | **不许直接推 `main`**（受保护）：一律开分支 → 测试全绿 → PR → squash 合并；细则见 `Agent.md` §3.7 |
 
 ---
 
@@ -179,7 +201,7 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 | 目标 | 32 条消息可编解码，topic 表唯一 |
 | 交付物 | `proto/rm/terminal.proto`、`proto/topics.inc`、`proto/ipc.proto`、`proto/ui_link.proto`、`libs/rm_proto/**`、`tests/unit/test_topics.cpp`、`tests/unit/test_codec.cpp` |
 | 出口条件 | `ctest` 绿：32 条齐全、id 唯一、名字唯一、方向/QoS 正确；7 条指令编码字节正确；23 条 decode 回环 |
-| 验收 | `ctest -R 'topics|codec'` 全绿 |
+| 验收 | `ctest -R topics` 与 `ctest -R codec` 全绿 |
 
 ### B5a 构建/测试容器（0.5 天）
 
@@ -194,17 +216,53 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 
 | 项 | 内容 |
 |---|---|
-| 目标 | 两个进程能握手、能收发帧 |
-| 交付物 | `libs/teleop_ipc/**`（帧头编解、socket RAII、session、握手状态机）、`tests/unit/test_frame.cpp`、`tests/unit/test_seqpacket.cpp` |
-| 出口条件 | 32 字节帧头往返正确；截断帧/超长帧被拒；抽象 socket 上发一帧收一帧 |
-| 验收 | `ctest -R 'frame|seqpacket'` 全绿 |
+| 目标 | `teleop_ipc` 成为**自包含**的 Apache-2.0 header-only 库：帧头、SEQPACKET、session、控制链路 IPC codec；节点/模拟器/终端桥都能消费 |
+| 交付物 | `libs/teleop_ipc/**`（`frame`/`seqpacket`/`session`/`control_link`/`wire` + `third_party/tl/expected.hpp`）、`tests/unit/{test_frame,test_seqpacket,test_session,test_control_link,test_ipc_headers}.cpp`、`docs/ipc-protocol.md` |
+| 出口条件 | 32 字节帧头 **golden bytes**（大端）往返正确；截断/超长/`body_len` 不符被拒；抽象/路径 socket 上发一帧收一帧；握手/seq/session 状态正确；手写 IPC codec 与 `ipc.pb` 逐字节一致；`payload` 0/60/300/1400 B 原样往返；库能在**独立 CMake 工程**里 `add_subdirectory` 后编过一个最小 TU |
+| 验收 | 五个测试全绿（命令见下）；容器内 `dev`、`ci`（`-Werror`）全绿 |
+
+> 本批**不实现**终端桥；桥的 Rx/Tx 组件、官方 envelope codec、rmcs-runtime 部署属于桥仓自己的计划（见桥仓 `docs/design.md`）。
+>
+> `docs/ipc-protocol.md` 是与桥仓共用的文档：两边各一份、内容一致；修改时必须同时改对端（见 `Agent.md` §3.8）。
+
+```bash
+ctest -R 'frame|seqpacket|session|control_link|ipc_headers'
+```
+
+### B2b 客户端 IPC 策略（1.5 天）
+
+| 项 | 内容 |
+|---|---|
+| 目标 | 客户端 IPC 端成为**可运行的进程**：连接/退避、握手、上行单槽、健康、下行发送、计数；不碰 MQTT/录制/UI |
+| 交付物 | `src/core/{clock,error,latest_value_register}.hpp`（最小集，不拉 spdlog/toml）、`src/ipc/ipc_client.hpp`、`tools/ipc_probe/**`（独立可执行，**不依赖 protobuf**）、`tests/unit/{test_core,test_ipc_client}.cpp` |
+| 出口条件 | `ipc-probe` 能连上对端（真桥；单测用 socketpair）：握手成功；收 75 Hz `UP_DATA`、发 50 Hz `DOWN_DATA`；`EAGAIN` 丢帧计数；断线退避重连；健康超时；上行单槽覆盖计数正确；`payload` 只搬不解析；**无桥时** `ipc-probe --duration` 正常跑完（连接尝试/退避/最后错误），不崩溃、不阻塞 |
+| 验收 | `ctest -R ipc_client` 全绿；`ipc-probe --socket … --duration 10 --down-hz 50 --stats` 打印握手/速率/计数 |
+
+> `ipc_client` 是生产策略，不是探针专用；B4 的 `teleop-node` 直接复用它，`ipc_probe` 只是可执行外壳 + 故障注入。
+>
+> `ipc_probe` 是机器人/MQTT 侧的**测试替身**：上行只计数 `UpData.payload`，下行发硬编码的官方 `CustomByteBlock` 样例；它不进入生产路径，也不改变“客户端不解 payload”的约束。
+>
+> **无 RMCS 模式**：`IpClient` 不以对端存在为前提。`connect` 失败（`ENOENT`/`ECONNREFUSED`/`EACCES`）只计数并按 100 ms→2 s 退避，不抛异常、不退出；`try_take_up` 无数据返回 false；`queue_down` 在非 ACTIVE 时直接丢弃并计数，不排队。B4 的 `teleop-node` 依赖这个语义，在没有 RMCS 时照常启动 MQTT/录制/UI。
+
+### I0 两端联调（0.5–1 天）
+
+| 项 | 内容 |
+|---|---|
+| 目标 | 客户端 `ipc_probe` ↔ 真终端桥，分三级：Link 级 → RMCS executor 组件级 → `rmcs-runtime` 运行时 |
+| 交付物 | 桥仓 `bridge_link_test`（无 ROS）+ `TerminalTestSource`/`TerminalTestSink`（测试组件）+ `config/terminal_test.yaml`；客户端 `ipc_probe`；联调脚本/记录 |
+| 出口条件 | Link 级：握手、75/50 Hz、seq/缺口、`EAGAIN`、重连、版本不匹配、握手超时、截断/超长；组件级：`rmcs_executor` 加载 `TerminalBridgeRx` + 测试源/汇，`ipc_probe` 连上；运行时：`rmcs-runtime` root + 宿主 probe，socket/uid/peercred 符合 §6.3 |
+| 验收 | 60 s 稳定；两端计数对齐；kill/restart；慢消费者；`rmcs-runtime` 验证清单全过 |
+
+> **2026-11-21 进度**：Link 级（`bridge_link_test` ↔ `ipc-probe`）、组件级（`rmcs_executor` + `terminal_test.yaml`）、launch 级（`launch-rmcs` + `rmcs_bringup/config/terminal_bridge_test.yaml`，容器 RMCS + 宿主 probe）均已通过；10 s 客户端侧 `rx_up=750`、`tx_down=500`、`gaps=0`、`down_drop=0`。**未完成**：`rmcs-runtime` root / `0666` / `--peer-uid 0`、60 s 稳定、kill/restart、慢消费者、两端计数对齐。I0 仍为 🟡。
+>
+> B3/B4 在 I0 绿之后开始。桥仓 D0–D5 的顺序与测试见桥仓 `docs/design.md`；本计划不重复。
 
 ### B3 两个模拟器（1 天）
 
 | 项 | 内容 |
 |---|---|
-| 目标 | 没有真实硬件也能产出数据 |
-| 交付物 | `tools/teleop_sim/**`（假 AT-Bridge：75 Hz `CustomControl`、50 Hz `CustomByteBlock`、断连/慢消费者注入）、`tools/referee_sim/**`（发 23 条下行、收 8 条上行、假图传）、`scripts/sim-demo.sh` |
+| 目标 | 没有真实硬件也能产出数据；在 I0 之后开始 |
+| 交付物 | `tools/teleop_sim/**`（假终端桥：75 Hz `CustomControl`、50 Hz `CustomByteBlock`、断连/慢消费者注入）、`tools/referee_sim/**`（发 23 条下行、收 8 条上行、假图传）、`scripts/sim-demo.sh` |
 | 出口条件 | 两个模拟器各自能独立跑；`referee_sim` 能收到 `teleop_sim` 之外任何客户端发的上行 |
 | 验收 | `./scripts/sim-demo.sh --dry-run` 打印双方收发计数 |
 
@@ -212,10 +270,10 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 
 | 项 | 内容 |
 |---|---|
-| 目标 | 端到端闭环 + 落盘 |
-| 交付物 | `src/core/**`、`src/ipc/**`、`src/mqtt/**`、`src/record/**`、`src/uilink/**`（server 侧）、`src/node/main.cpp`、`packaging/systemd/teleop-node.service`、`tests/integration/test_end_to_end.cpp` |
-| 出口条件 | `sim-demo.sh` 起 mosquitto + 两个模拟器 + `teleop-node`，产出会话目录且含 `mqtt_up.pb.zst`、`mqtt_down.pb.zst`；单槽覆盖计数正确；`systemctl stop` 优雅退出 |
-| 验收 | `ctest -R integration`；`zstd -d < mqtt_up.pb.zst | head` 能看到记录 |
+| 目标 | 端到端闭环 + 落盘；B2b 的 `ipc_client` 直接复用，本批补 MQTT/录制/uilink/组装 |
+| 交付物 | `src/mqtt/**`、`src/record/**`、`src/uilink/**`（server 侧）、`src/node/main.cpp`、`src/core/log.hpp`、`packaging/systemd/teleop-node.service`、`tests/integration/test_end_to_end.cpp`、`tests/integration/test_no_rmcs.cpp`（无 RMCS 启动 + 恢复）（`src/core`/`src/ipc` 已在 B2b 落地） |
+| 出口条件 | `sim-demo.sh` 起 mosquitto + 两个模拟器 + `teleop-node`，产出会话目录且含 `mqtt_up.pb.zst`、`mqtt_down.pb.zst`；单槽覆盖计数正确；`systemctl stop` 优雅退出；**无 RMCS 启动时 node 照常运行，RMCS 上线后自动恢复，不重启 node** |
+| 验收 | `ctest -R integration`；`zstd -d` 后能看到记录；日志符合 [`logging.md`](logging.md)，不逐帧打印 |
 
 ### B5b GUI/GPU 容器（0.5 天，M0 之前做）
 
@@ -235,9 +293,23 @@ core + uilink + rm_proto ──► teleop_ui（M3，才拉 Qt / GStreamer）
 
 1. `cmake --preset dev`、`--preset release`、`--preset ci` 三个都能配置；
 2. `ctest --preset dev` 全绿；
-3. 新增文件都有 SPDX 头（或已被 `REUSE.toml` 覆盖）；
+3. 新增文件都有 SPDX 头（或已被 `REUSE.toml` 覆盖）；vendored 的 `tl::expected` 有 CC0 标注；
 4. 文档第 9 节已更新；
-5. 一个提交（或一组小提交）说明清楚做了什么。
+5. 一个提交（或一组小提交）说明清楚做了什么；
+6. B2 额外：`libs/teleop_ipc` 在**独立 CMake 工程**里 `add_subdirectory` 后能编过一个最小 TU（证明桥仓可以消费）；
+7. B2b 额外：`ipc-probe --socket … --duration 10 --down-hz 50 --stats` 能连上真桥（单测用 socketpair 假 peer），打印握手/速率/计数；
+8. I0 额外：两端联调的 Link/组件/运行时三级至少各跑一次，记录在桥仓；
+9. 日志：正式运行日志符合 [`logging.md`](logging.md) 的 `[时间][类别][模块]` 格式，只输出必要状态。
+
+**IPC 两端闭环验收（B2 + B2b + 桥仓 D0–D3 做完）**
+
+```bash
+ipc-probe --socket ~/.local/state/teleop/run/rmcs/control.sock \
+          --duration 60 --down-hz 50 --stats
+# 期望：handshake ok；up ≈75 Hz；down ≈50 Hz；steady-state drops/gaps 为 0
+```
+
+> 当前进度：Link/组件/launch 级已过（10 s，`rx_up=750`、`tx_down=500`、`gaps=0`）；上面的 60 s 与 `rmcs-runtime` root 还未跑，I0 仍为 🟡。
 
 **第一批整体验收（B0–B4 与 B5a 做完）**
 
@@ -258,6 +330,9 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | 32 条消息里 `RadarInfoToClient` 原文有误 | 联调时解析失败 | 已按修正版实现；预留"两种都试"的容错分支（B1 里留 TODO） |
 | 模拟器与真实协议偏差 | 到现场才发现 | B3 完成后，尽早用真裁判系统跑一次（§19 待定项 6） |
 | 单槽实现走样（某处偷偷用队列） | 延迟随运行时长增长 | 代码评审 + B4 的"慢消费者"集成测试 |
+| 手写 IPC codec 与 `.proto` 漂移 | 线上字节不一致 | `test_control_link` 用 `ipc.pb` 逐字节对照；改 proto 必须同时改 codec/测试 |
+| 桥仓与客户端协议漂移 | 桥编不过或握手失败 | 桥仓 vendor 快照 + 显式同步；`docs/ipc-protocol.md` 是唯一契约；握手版本检查兜底 |
+| `rmcs-runtime` root 下 socket 权限 | 节点连不上/peercred 拒绝 | 宿主目录 0700、socket 0666、桥 `allowed_uid=1000`、节点 `allowed_peer_uid=0`；按 dev-environment §6.3 清单验证 |
 
 ---
 
@@ -268,12 +343,68 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | B0 骨架 | ✅ 完成 | 2026-11-19 | 许可证 / REUSE / CMake + 五个预设 / 格式化配置 / README / 首个提交；`cmake --preset dev`、`--preset release` 均通过 |
 | B1 协议层 | ✅ 完成 | 2026-11-19 | 32 条消息 + `topics.inc` + 两个内部链路 proto + `rm_proto` 编解码库（已改为 header-only）+ 23 个用例；在 Ubuntu 24.04 容器（protoc 3.21.12）里 `dev` 与 `ci`（`-Werror`）预设均全绿 |
 | B5a 构建容器 | ✅ 完成 | 2026-11-19 | `docker/Dockerfile`（base/dev/ci）+ `build.sh` + `dev-shell.sh` + CI 骨架；容器内 `ci` 预 configure/build/ctest 全绿 |
-| B2 IPC | ⬜ 未开始 | — | — |
-| B3 模拟器 | ⬜ 未开始 | — | — |
-| B4 通信进程 | ⬜ 未开始 | — | — |
+| B2 IPC | ✅ 完成 | 2026-11-20 | `libs/teleop_ipc` 自包含库：frame/seqpacket/session/control_link/wire + vendored `tl::expected`；`test_frame`/`test_seqpacket`/`test_session`/`test_control_link`/`test_ipc_headers`；容器内 `dev` 与 `ci`（含头文件 `-Werror` smoke）全绿；独立 CMake 工程 `add_subdirectory` 可消费 |
+| B2b 客户端 IPC | ✅ 完成 | 2026-11-21 | `src/core` + `IpClient` + `ipc-probe`；13 个客户端用例（握手/超时/版本/peercred/单槽/限速/`EAGAIN`/无桥退避）+ `test_core`；宿主 Debug/Release `-Werror` 全绿；Link/组件/launch 联调已过；I0 运行时见下一行 |
+| I0 两端联调 | ⏸ 挂起 | 2026-11-22 | Link/组件/launch 和 60 B/600 s 基线已过；runtime 因 RMCS 运行时控制、下游 CustomByteBlock 消费未完成而挂起；恢复后补 root/权限/restart/慢消费者/两端计数 |
+| B3 模拟器 | ⬜ 未开始 | — | **下一批开始**；先做 `teleop_sim` + `referee_sim` |
+| B4 通信进程 | ⬜ 未开始 | — | B3 后开始；复用 B2b 的 `ipc_client` |
 | B5b GUI/GPU 容器 | ⬜ 未开始 | — | M0 之前做 |
 
-> 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
+> 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⏸ 挂起 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
+>
+> B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；B2b 已完成；I0 的非 runtime 部分已通过。终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**B3 → B4**；I0 runtime 等外部依赖完成后再恢复。
+
+### 9.1 延迟测量（2026-11-22）
+
+已落地：
+
+- `ipc-probe --latency`：桥发送 → 客户端接收的单向延迟；
+- `ipc-probe --record PATH`：每帧 CSV + 自动 metadata JSON；
+- `ipc-probe --rtt`：Echo token 回环；
+- `tools/plot_latency.py`：时间序列、直方图、每秒 p50/p95/p99；
+- 桥仓 `TerminalTestEcho` + `terminal_echo_test.yaml`：RTT 测试支持。
+
+详细结果见 [延迟测试报告](latency-test-report.md)。
+
+60 B 数据、600 s、不绑核基线：
+
+```text
+样本        44,925（75 warm-up）
+payload_size 62（60 B 数据段）
+p50         0.137 ms
+p95         0.219 ms
+p99         0.282 ms
+p99.9       0.452 ms
+max         3.42 ms
+>1 ms       12 / 44,925
+negative    0
+```
+
+120 s 短测（01）与它一致：p50 0.141 ms、p99 0.287 ms、p99.9 0.405 ms。
+
+绑核对比（桥 CPU4 / probe CPU6、单边绑核、E-core 桥）显示：
+
+- p50 最低约 0.095 ms；
+- 但 p99 升到 1.0–1.4 ms，p99.9 约 3.0 ms；
+- probe 绑 CPU6 是尾部恶化的主要来源；
+- 当前综合建议：**不绑核**，600 s 基线已完成（00）；绑核需要 CPU 隔离后再做。
+
+早期 10 min 的 6 B envelope 记录只作为工具调试历史，不再作为 60 B 基线。RTT 只作为测试工具保留，不作为本轮验收重点。
+
+### 9.2 计划调整（2026-11-22）
+
+RMCS 运行时控制负责人和下游 `CustomByteBlock` 消费组件尚未完成，I0 runtime / 桥 D5 暂时挂起：
+
+- 不把 I0 标为完成，也不把 D5 标为完成；
+- 保留恢复条件：
+  1. `rmcs-runtime` 能加载 `TerminalBridgeRx`；
+  2. 生产作者能产生 `CustomControl`；
+  3. 下游能消费 `CustomByteBlock`；
+  4. socket/uid/peercred 权限清单通过；
+  5. 600 s、restart、慢消费者、两端计数对齐。
+- 当前先推进客户端 B3（两个模拟器）和 B4（`teleop-node`）；
+- B4 结束前用真实桥 `terminal_test.yaml` 做一次 TestSource 冒烟，不把 `teleop_sim` 当作真桥验收；
+- 外部依赖到位后恢复 I0 runtime，再进入生产验收。
 
 ---
 
@@ -282,3 +413,15 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | 版本 | 日期 | 说明 |
 |---|---|---|
 | v1.0 | 2026-11-19 | 首次定稿：六批次划分、技术选择、命名约定、验收标准 |
+| v1.1 | 2026-11-20 | IPC 契约与桥边界回填：`teleop_ipc` 自包含 + 手写 IPC codec + `wire`；`tl::expected` vendor；B2 交付物/验收更新；原 AT-Bridge 更名 `rmcs_terminal_bridge` 并移出本计划（独立仓/文档）；新增 `docs/ipc-protocol.md`；rmcs-runtime 部署风险 |
+| v1.2 | 2026-11-20 | 调整为 **IPC 两端优先**：新增 B2b（`core` 最小集 + `ipc_client` + `ipc_probe`）与 I0（客户端 probe ↔ 终端桥三级联调）；桥仓 D0–D3 并行；B3/B4 后置；`ipc_probe` 进目录/命名/DoD/进度 |
+| v1.3 | 2026-11-20 | B2 落地：`libs/teleop_ipc` 自包含库 + 5 个测试 + 头文件 `-Werror` smoke；库命名空间定为 `teleop::link`（避免与生成的 `teleop::ipc` 冲突）；容器内 `dev`/`ci` 全绿；B2b 待开始 |
+| v1.4 | 2026-11-20 | 桥仓改为 **vendored `teleop_ipc`**：整库快照 + `add_subdirectory`，删除 FetchContent/SOURCE_DIR 依赖；共享 IPC 文档升 v1.1；桥仓构建不再访问 Alliance-Terminal |
+| v1.5 | 2026-11-20 | **B2b 落地**：`src/core`（clock/error/`LatestValueRegister`）+ `IpClient`（单 IPC 线程、握手/退避/单槽/有界下行队列/健康/计数）+ `ipc-probe`；无 RMCS 时保持 `DISCONNECTED` 并退避；新增 `test_core`/`test_ipc_client`；架构 §4.3/§5.9/§5.10 同步单线程、无 RMCS、失败分类口径 |
+| v1.6 | 2026-11-21 | 文档跟进：B2b 标完成；I0 标进行中并记录 Link/组件/launch 通过、10 s 750/500、无 gaps/drop；剩余 `rmcs-runtime` root/60 s/restart/慢消费者/两端计数；B3/B4 仍未开始 |
+| v1.7 | 2026-11-21 | 新增日志规范 [`logging.md`](logging.md)：`[时间][类别][模块]详情`、模块/级别约定、只记必要状态；B4 交付物加 `src/core/log.hpp`，DoD 加日志格式检查 |
+| v1.8 | 2026-11-22 | 延迟测试工具落地：`ipc-probe --latency/--record/--rtt` + `tools/plot_latency.py` + 桥仓 Echo；早期 10 min 6 B 记录只作为工具调试历史 |
+| v1.9 | 2026-11-22 | 新增 [延迟测试报告](latency-test-report.md)：60 B/120 s baseline 与 01–06 绑核对比；不绑核 p50 0.141 ms、p99 0.287 ms、p99.9 0.405 ms；绑核 p50 更好但尾部明显变差；当前建议不绑核，600 s 复测待做 |
+| v1.10 | 2026-11-22 | 项目进度整理：I0 补记 60 B/120 s 延迟基线；README 当前进度同步；下一阶段仍是 I0 runtime/600 s，之后 B3/B4 |
+| v1.11 | 2026-11-22 | 600 s 不绑核基线完成（00）：p50 0.137 ms、p99 0.282 ms、p99.9 0.452 ms、max 3.42 ms、>1 ms 12/44,925；120 s 结果一致；README/计划/报告同步 |
+| v1.12 | 2026-11-22 | 计划调整：I0 runtime / 桥 D5 因 RMCS 运行时控制和下游消费未完成而挂起；B3/B4 优先；保留 I0 恢复条件，并要求 B4 结束前用真实桥做 TestSource 冒烟 |
