@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.8 |
-| 状态 | **施工中**（B0、B1、B5a、B2、B2b 已完成；I0 的 Link/组件/launch 级已通过，`rmcs-runtime` 运行时待验证；B3/B4 未开始；进度见第 9 节） |
+| 文档版本 | v1.12 |
+| 状态 | **施工中**（B0、B1、B5a、B2、B2b 已完成；I0 Link/组件/launch 和 600 s 基线已通过，**runtime 因外部依赖挂起**；下一阶段 B3/B4） |
 | 日期 | 2026-11-22 |
 | 关联文档 | `teleop-client-architecture.md`（v1.8）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.3）、`ipc-protocol.md`（v1.1）、`logging.md` |
 
@@ -345,14 +345,14 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | B5a 构建容器 | ✅ 完成 | 2026-11-19 | `docker/Dockerfile`（base/dev/ci）+ `build.sh` + `dev-shell.sh` + CI 骨架；容器内 `ci` 预 configure/build/ctest 全绿 |
 | B2 IPC | ✅ 完成 | 2026-11-20 | `libs/teleop_ipc` 自包含库：frame/seqpacket/session/control_link/wire + vendored `tl::expected`；`test_frame`/`test_seqpacket`/`test_session`/`test_control_link`/`test_ipc_headers`；容器内 `dev` 与 `ci`（含头文件 `-Werror` smoke）全绿；独立 CMake 工程 `add_subdirectory` 可消费 |
 | B2b 客户端 IPC | ✅ 完成 | 2026-11-21 | `src/core` + `IpClient` + `ipc-probe`；13 个客户端用例（握手/超时/版本/peercred/单槽/限速/`EAGAIN`/无桥退避）+ `test_core`；宿主 Debug/Release `-Werror` 全绿；Link/组件/launch 联调已过；I0 运行时见下一行 |
-| I0 两端联调 | 🟡 进行中 | 2026-11-21 | Link 级、组件级、launch 级已通过；10 s 客户端侧 `rx_up=750`、`tx_down=500`、`gaps=0`、`down_drop=0`；待 `rmcs-runtime` root、60 s、kill/restart、慢消费者、两端计数对齐 |
-| B3 模拟器 | ⬜ 未开始 | — | — |
-| B4 通信进程 | ⬜ 未开始 | — | 复用 B2b 的 `ipc_client` |
+| I0 两端联调 | ⏸ 挂起 | 2026-11-22 | Link/组件/launch 和 60 B/600 s 基线已过；runtime 因 RMCS 运行时控制、下游 CustomByteBlock 消费未完成而挂起；恢复后补 root/权限/restart/慢消费者/两端计数 |
+| B3 模拟器 | ⬜ 未开始 | — | **下一批开始**；先做 `teleop_sim` + `referee_sim` |
+| B4 通信进程 | ⬜ 未开始 | — | B3 后开始；复用 B2b 的 `ipc_client` |
 | B5b GUI/GPU 容器 | ⬜ 未开始 | — | M0 之前做 |
 
-> 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
+> 状态用 ⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ⏸ 挂起 / ⛔ 受阻。每批完成后在此追加一行结论（做了什么、没做什么、遗留什么）。
 >
-> B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；B2b 已完成；I0 的 Link/组件/launch 级已通过，下一步是 `rmcs-runtime` 运行时验收。终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**I0 运行时 → B3/B4**。
+> B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；B2b 已完成；I0 的非 runtime 部分已通过。终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**B3 → B4**；I0 runtime 等外部依赖完成后再恢复。
 
 ### 9.1 延迟测量（2026-11-22）
 
@@ -364,20 +364,47 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 - `tools/plot_latency.py`：时间序列、直方图、每秒 p50/p95/p99；
 - 桥仓 `TerminalTestEcho` + `terminal_echo_test.yaml`：RTT 测试支持。
 
-首轮 10 min 记录（`.records/latency01.csv`）：
+详细结果见 [延迟测试报告](latency-test-report.md)。
+
+60 B 数据、600 s、不绑核基线：
 
 ```text
 样本        44,925（75 warm-up）
-payload     6 B envelope（4 B 数据段，不是生产 60 B）
-p50         0.285 ms
-p95         0.360 ms
-p99         0.430 ms
-p99.9       0.546 ms
-max         5.875 ms（孤立尖峰）
+payload_size 62（60 B 数据段）
+p50         0.137 ms
+p95         0.219 ms
+p99         0.282 ms
+p99.9       0.452 ms
+max         3.42 ms
+>1 ms       12 / 44,925
 negative    0
 ```
 
-60 B 数据段短测已通过（`payload_size=62`）；60 B 的 10 min 记录、绑核和分段计时待做。RTT 只作为测试工具保留，不作为本轮验收重点。
+120 s 短测（01）与它一致：p50 0.141 ms、p99 0.287 ms、p99.9 0.405 ms。
+
+绑核对比（桥 CPU4 / probe CPU6、单边绑核、E-core 桥）显示：
+
+- p50 最低约 0.095 ms；
+- 但 p99 升到 1.0–1.4 ms，p99.9 约 3.0 ms；
+- probe 绑 CPU6 是尾部恶化的主要来源；
+- 当前综合建议：**不绑核**，600 s 基线已完成（00）；绑核需要 CPU 隔离后再做。
+
+早期 10 min 的 6 B envelope 记录只作为工具调试历史，不再作为 60 B 基线。RTT 只作为测试工具保留，不作为本轮验收重点。
+
+### 9.2 计划调整（2026-11-22）
+
+RMCS 运行时控制负责人和下游 `CustomByteBlock` 消费组件尚未完成，I0 runtime / 桥 D5 暂时挂起：
+
+- 不把 I0 标为完成，也不把 D5 标为完成；
+- 保留恢复条件：
+  1. `rmcs-runtime` 能加载 `TerminalBridgeRx`；
+  2. 生产作者能产生 `CustomControl`；
+  3. 下游能消费 `CustomByteBlock`；
+  4. socket/uid/peercred 权限清单通过；
+  5. 600 s、restart、慢消费者、两端计数对齐。
+- 当前先推进客户端 B3（两个模拟器）和 B4（`teleop-node`）；
+- B4 结束前用真实桥 `terminal_test.yaml` 做一次 TestSource 冒烟，不把 `teleop_sim` 当作真桥验收；
+- 外部依赖到位后恢复 I0 runtime，再进入生产验收。
 
 ---
 
@@ -393,4 +420,8 @@ negative    0
 | v1.5 | 2026-11-20 | **B2b 落地**：`src/core`（clock/error/`LatestValueRegister`）+ `IpClient`（单 IPC 线程、握手/退避/单槽/有界下行队列/健康/计数）+ `ipc-probe`；无 RMCS 时保持 `DISCONNECTED` 并退避；新增 `test_core`/`test_ipc_client`；架构 §4.3/§5.9/§5.10 同步单线程、无 RMCS、失败分类口径 |
 | v1.6 | 2026-11-21 | 文档跟进：B2b 标完成；I0 标进行中并记录 Link/组件/launch 通过、10 s 750/500、无 gaps/drop；剩余 `rmcs-runtime` root/60 s/restart/慢消费者/两端计数；B3/B4 仍未开始 |
 | v1.7 | 2026-11-21 | 新增日志规范 [`logging.md`](logging.md)：`[时间][类别][模块]详情`、模块/级别约定、只记必要状态；B4 交付物加 `src/core/log.hpp`，DoD 加日志格式检查 |
-| v1.8 | 2026-11-22 | 延迟测试工具落地：`ipc-probe --latency/--record/--rtt` + `tools/plot_latency.py` + 桥仓 Echo；记录 10 min 单向延迟基线（p50 0.285 ms、p99 0.430 ms、p99.9 0.546 ms、max 5.875 ms，6 B envelope）；60 B 短测通过，10 min/绑核/分段计时待做 |
+| v1.8 | 2026-11-22 | 延迟测试工具落地：`ipc-probe --latency/--record/--rtt` + `tools/plot_latency.py` + 桥仓 Echo；早期 10 min 6 B 记录只作为工具调试历史 |
+| v1.9 | 2026-11-22 | 新增 [延迟测试报告](latency-test-report.md)：60 B/120 s baseline 与 01–06 绑核对比；不绑核 p50 0.141 ms、p99 0.287 ms、p99.9 0.405 ms；绑核 p50 更好但尾部明显变差；当前建议不绑核，600 s 复测待做 |
+| v1.10 | 2026-11-22 | 项目进度整理：I0 补记 60 B/120 s 延迟基线；README 当前进度同步；下一阶段仍是 I0 runtime/600 s，之后 B3/B4 |
+| v1.11 | 2026-11-22 | 600 s 不绑核基线完成（00）：p50 0.137 ms、p99 0.282 ms、p99.9 0.452 ms、max 3.42 ms、>1 ms 12/44,925；120 s 结果一致；README/计划/报告同步 |
+| v1.12 | 2026-11-22 | 计划调整：I0 runtime / 桥 D5 因 RMCS 运行时控制和下游消费未完成而挂起；B3/B4 优先；保留 I0 恢复条件，并要求 B4 结束前用真实桥做 TestSource 冒烟 |

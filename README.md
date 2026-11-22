@@ -21,9 +21,12 @@ RoboMaster 自定义终端的操作端：把 RMCS 的控制数据经 MQTT 送进
 ## 当前进度
 
 - B0、B1、B5a、B2、B2b 已完成；
-- I0 的 Link、组件、`launch-rmcs` 级已通过，`rmcs-runtime` 运行时验收待做；
-- B3 模拟器、B4 通信进程、B5b GUI/GPU 容器尚未开始；
-- 详细状态见[施工计划](docs/teleop-client-implementation-plan.md)。
+- I0 的 Link、组件、`launch-rmcs` 级和 60 B/600 s 延迟基线已通过；
+- **I0 runtime / 桥 D5 因 RMCS 运行时控制和下游消费未完成而暂时挂起**；
+- 下一阶段优先推进 B3 模拟器、B4 `teleop-node`；
+- 当前延迟基线：不绑核 p50 0.137 ms、p99 0.282 ms、p99.9 0.452 ms；绑核会放大尾部；
+- B5b GUI/GPU 容器尚未开始；
+- 详细状态见[施工计划](docs/teleop-client-implementation-plan.md)，延迟结果见[延迟测试报告](docs/latency-test-report.md)。
 
 ## 通信结构
 
@@ -222,6 +225,7 @@ docs/       设计文档
 | [自定义终端协议](docs/custom-terminal-protocol.md) | 官方 32 个 topic 的整理稿与实现要点 |
 | [开发容器](docs/teleop-client-dev-environment.md) | 环境基线、容器参数、发布兼容性 |
 | [日志规范](docs/logging.md) | `[时间][类别][模块]` 格式、模块名、记录边界 |
+| [延迟测试报告](docs/latency-test-report.md) | 测量口径、工具、01–06 绑核对比与结论 |
 | [IPC 协议](docs/ipc-protocol.md) | 控制链路帧格式、payload 边界、终端桥契约、rmcs-runtime 部署 |
 | [施工计划](docs/teleop-client-implementation-plan.md) | 批次划分、目录、验收标准与进度追踪 |
 | [AI 助手约定](Agent.md) | 提交格式、header-only、注释规则、代码与架构约束 |
