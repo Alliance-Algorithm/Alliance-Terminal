@@ -2,9 +2,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.7 |
+| 文档版本 | v1.8 |
 | 状态 | **施工中**（B0、B1、B5a、B2、B2b 已完成；I0 的 Link/组件/launch 级已通过，`rmcs-runtime` 运行时待验证；B3/B4 未开始；进度见第 9 节） |
-| 日期 | 2026-11-21 |
+| 日期 | 2026-11-22 |
 | 关联文档 | `teleop-client-architecture.md`（v1.8）、`custom-terminal-protocol.md`、`teleop-client-dev-environment.md`（v0.3）、`ipc-protocol.md`（v1.1）、`logging.md` |
 
 > 本文是"**怎么建**"的施工图：顺序、目录、批次、验收标准。
@@ -354,6 +354,31 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 >
 > B2 的协议与范围已在 v1.3 定稿并落地（代码见 `libs/teleop_ipc`）；B2b 已完成；I0 的 Link/组件/launch 级已通过，下一步是 `rmcs-runtime` 运行时验收。终端桥另见其独立仓的文档，不计入本表。当前优先顺序：**I0 运行时 → B3/B4**。
 
+### 9.1 延迟测量（2026-11-22）
+
+已落地：
+
+- `ipc-probe --latency`：桥发送 → 客户端接收的单向延迟；
+- `ipc-probe --record PATH`：每帧 CSV + 自动 metadata JSON；
+- `ipc-probe --rtt`：Echo token 回环；
+- `tools/plot_latency.py`：时间序列、直方图、每秒 p50/p95/p99；
+- 桥仓 `TerminalTestEcho` + `terminal_echo_test.yaml`：RTT 测试支持。
+
+首轮 10 min 记录（`.records/latency01.csv`）：
+
+```text
+样本        44,925（75 warm-up）
+payload     6 B envelope（4 B 数据段，不是生产 60 B）
+p50         0.285 ms
+p95         0.360 ms
+p99         0.430 ms
+p99.9       0.546 ms
+max         5.875 ms（孤立尖峰）
+negative    0
+```
+
+60 B 数据段短测已通过（`payload_size=62`）；60 B 的 10 min 记录、绑核和分段计时待做。RTT 只作为测试工具保留，不作为本轮验收重点。
+
 ---
 
 ## 10. 变更记录
@@ -368,3 +393,4 @@ ls ~/.local/share/teleop/sessions/*/   # 应有 mqtt_up.pb.zst / mqtt_down.pb.zs
 | v1.5 | 2026-11-20 | **B2b 落地**：`src/core`（clock/error/`LatestValueRegister`）+ `IpClient`（单 IPC 线程、握手/退避/单槽/有界下行队列/健康/计数）+ `ipc-probe`；无 RMCS 时保持 `DISCONNECTED` 并退避；新增 `test_core`/`test_ipc_client`；架构 §4.3/§5.9/§5.10 同步单线程、无 RMCS、失败分类口径 |
 | v1.6 | 2026-11-21 | 文档跟进：B2b 标完成；I0 标进行中并记录 Link/组件/launch 通过、10 s 750/500、无 gaps/drop；剩余 `rmcs-runtime` root/60 s/restart/慢消费者/两端计数；B3/B4 仍未开始 |
 | v1.7 | 2026-11-21 | 新增日志规范 [`logging.md`](logging.md)：`[时间][类别][模块]详情`、模块/级别约定、只记必要状态；B4 交付物加 `src/core/log.hpp`，DoD 加日志格式检查 |
+| v1.8 | 2026-11-22 | 延迟测试工具落地：`ipc-probe --latency/--record/--rtt` + `tools/plot_latency.py` + 桥仓 Echo；记录 10 min 单向延迟基线（p50 0.285 ms、p99 0.430 ms、p99.9 0.546 ms、max 5.875 ms，6 B envelope）；60 B 短测通过，10 min/绑核/分段计时待做 |

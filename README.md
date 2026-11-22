@@ -176,7 +176,31 @@ B2b 的 `ipc-probe` 可以单独运行：没有 RMCS 时保持 `DISCONNECTED` �
 ./build/dev/tools/ipc_probe/ipc-probe \
     --socket ~/.local/state/teleop/run/rmcs/control.sock \
     --peer-uid 0 --duration 60 --down-hz 50 --stats
+
+# A：桥发送 → 客户端接收的单向延迟
+./build/dev/tools/ipc_probe/ipc-probe \
+    --socket ~/.local/state/teleop/run/rmcs/control.sock \
+    --peer-uid 0 --duration 60 --latency
+
+# C：RTT 回环；需要桥加载 TerminalTestEcho（terminal_echo_test.yaml）
+./build/dev/tools/ipc_probe/ipc-probe \
+    --socket ~/.local/state/teleop/run/rmcs/control.sock \
+    --peer-uid 0 --duration 60 --down-hz 10 --latency --rtt
+
+# 逐样本记录单向延迟，之后用 Python 出图
+mkdir -p ~/teleop-latency
+./build/dev/tools/ipc_probe/ipc-probe \
+    --socket ~/.local/state/teleop/run/rmcs/control.sock \
+    --peer-uid 0 --duration 600 --record ~/teleop-latency/run-001.csv
+
+# matplotlib 依赖：Ubuntu 26.04 建议用 venv 或 apt，不要直接 --user
+python3 -m venv ~/.venvs/teleop-plot
+~/.venvs/teleop-plot/bin/pip install matplotlib
+~/.venvs/teleop-plot/bin/python tools/plot_latency.py ~/teleop-latency/run-001.csv
 ```
+
+> `--latency` 是桥发送→客户端接收的单向延迟；`--rtt` 从 `queue_down` 起算，包含客户端下行节拍和桥的 50/75 Hz 调度。
+> `--record` 会为每个 `UpData` 写一行 CSV，并自动生成同名 `.meta.json`；`--record-meta PATH` 可覆盖 metadata 路径。
 
 ## 目录
 
@@ -184,7 +208,7 @@ B2b 的 `ipc-probe` 可以单独运行：没有 RMCS 时保持 `DISCONNECTED` �
 proto/      官方协议的转录实现（Apache-2.0）
 libs/       可复用头文件库：rm_proto、teleop_ipc（Apache-2.0）
 src/        通信进程与前端（GPL-3.0-or-later）
-tools/      IPC 探针与模拟器：ipc_probe、teleop_sim、referee_sim（Apache-2.0）
+tools/      IPC 探针、延迟绘图与模拟器：ipc_probe、plot_latency、teleop_sim、referee_sim（Apache-2.0）
 tests/      单元 / 集成 / fuzz
 docker/     开发容器
 docs/       设计文档
